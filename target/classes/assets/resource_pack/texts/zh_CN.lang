@@ -1,6 +1,0 @@
-pack.name=五子棋资源包
-pack.description=五子棋棋盘与棋子资源（Nukkit-MOT 服务端内置）
-tile.gomoku:board.name=五子棋棋盘
-item.gomoku:board_item.name=五子棋棋盘
-tile.gomoku:board_4x4.name=五子棋棋盘（4×4）
-item.gomoku:board_4x4_item.name=五子棋棋盘（4×4）

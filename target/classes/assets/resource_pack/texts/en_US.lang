@@ -1,6 +1,0 @@
-pack.name=Gomoku Board Resource Pack
-pack.description=Gomoku board and stone assets (bundled with the Nukkit-MOT server)
-tile.gomoku:board.name=Gomoku Board
-item.gomoku:board_item.name=Gomoku Board
-tile.gomoku:board_4x4.name=Gomoku Board (4×4)
-item.gomoku:board_4x4_item.name=Gomoku Board (4×4)
