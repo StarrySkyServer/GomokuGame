@@ -5,7 +5,6 @@ import cn.nukkit.entity.Entity;
 import cn.nukkit.entity.custom.CustomEntity;
 import cn.nukkit.entity.custom.EntityDefinition;
 import cn.nukkit.entity.data.Vector3fEntityData;
-import cn.nukkit.entity.data.property.BooleanEntityProperty;
 import cn.nukkit.entity.data.property.EntityProperty;
 import cn.nukkit.entity.data.property.IntEntityProperty;
 import cn.nukkit.event.entity.EntityDamageEvent;
@@ -18,7 +17,7 @@ import top.gomoku.game.GomokuBoard;
  * <p>
  * 棋盘状态通过实体属性 {@code gomoku:row_0 .. gomoku:row_14}（三进制编码）同步给客户端，
  * 客户端动画据此缩放对应骨骼来显示黑白棋子；{@code hover}/{@code last} 控制准星高亮与最后一手标记，
- * {@code large} 控制棋盘网格放大到 1.6 倍以对齐 2x2 棋盘方块。
+ * {@code size} 表示棋盘边长（2 = 标准 2x2，4 = 大号 4x4），客户端据此把整个网格放大到 1.6 / 3.2 倍。
  */
 public class GomokuStoneEntity extends Entity implements CustomEntity {
 
@@ -31,7 +30,7 @@ public class GomokuStoneEntity extends Entity implements CustomEntity {
 
     public static final String P_HOVER = "gomoku:hover";
     public static final String P_LAST = "gomoku:last";
-    public static final String P_LARGE = "gomoku:large";
+    public static final String P_SIZE = "gomoku:size";
 
     public static final EntityDefinition DEF = EntityDefinition.builder()
             .identifier(IDENTIFIER)
@@ -59,7 +58,7 @@ public class GomokuStoneEntity extends Entity implements CustomEntity {
         }
         EntityProperty.register(IDENTIFIER, new IntEntityProperty(P_HOVER, 0, SIZE * SIZE, 0));
         EntityProperty.register(IDENTIFIER, new IntEntityProperty(P_LAST, 0, SIZE * SIZE, 0));
-        EntityProperty.register(IDENTIFIER, new BooleanEntityProperty(P_LARGE, true));
+        EntityProperty.register(IDENTIFIER, new IntEntityProperty(P_SIZE, 0, 4, 2));
     }
 
     public GomokuStoneEntity(FullChunk chunk, CompoundTag nbt) {
@@ -111,7 +110,7 @@ public class GomokuStoneEntity extends Entity implements CustomEntity {
         this.setCanBeSavedWithChunk(false);
         // 再同步一个极小碰撞箱，双保险：即便某些版本按 metadata 绘制阴影/命中箱也能消掉
         this.setDataProperty(new Vector3fEntityData(DATA_COLLISION_BOX, 0.001f, 0.001f, 0.001f));
-        this.setBooleanEntityProperty(P_LARGE, true);
+        this.setIntEntityProperty(P_SIZE, 2);
     }
 
     @Override
@@ -152,22 +151,54 @@ public class GomokuStoneEntity extends Entity implements CustomEntity {
     public void kill() {
     }
 
+    /** 批量提交标记：置位期间所有属性变更只改本地值，不发包。 */
+    private boolean batching;
+
+    /**
+     * 开始批量提交属性。棋盘有 15 个行属性，开局/清盘若逐条同步会连发 15 个元数据包，
+     * 用 beginBatch/endBatch 包住后整批只发一个。
+     */
+    public void beginBatch() {
+        this.batching = true;
+    }
+
+    /** 结束批量提交并一次性同步全部变更。 */
+    public void endBatch() {
+        this.batching = false;
+        this.syncProperties();
+    }
+
     public void setRow(int row, int value) {
         if (this.setIntEntityProperty(rowName(row), value)) {
-            this.syncProperties();
+            this.sync();
+        }
+    }
+
+    /** 设置棋盘边长（2 = 标准，4 = 大号），客户端据此缩放网格。 */
+    public void setBoardSize(int size) {
+        if (this.setIntEntityProperty(P_SIZE, size >= 4 ? 4 : 2)) {
+            this.sync();
         }
     }
 
     public void setHover(int index) {
         if (this.setIntEntityProperty(P_HOVER, index)) {
-            this.syncProperties();
+            this.sync();
         }
     }
 
     public void setLast(int index) {
         if (this.setIntEntityProperty(P_LAST, index)) {
-            this.syncProperties();
+            this.sync();
         }
+    }
+
+    /** 单条属性变更后的同步；处于批量模式时跳过，由 endBatch 统一发包。 */
+    private void sync() {
+        if (this.batching) {
+            return;
+        }
+        this.syncProperties();
     }
 
     public void syncProperties() {

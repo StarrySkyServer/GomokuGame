@@ -3,6 +3,7 @@ package top.gomoku.game;
 import cn.nukkit.Player;
 import cn.nukkit.Server;
 import cn.nukkit.block.Block;
+import cn.nukkit.command.CommandSender;
 import cn.nukkit.event.EventHandler;
 import cn.nukkit.event.EventPriority;
 import cn.nukkit.event.Listener;
@@ -16,8 +17,15 @@ import cn.nukkit.level.Level;
 import cn.nukkit.math.BlockFace;
 import cn.nukkit.math.Vector3;
 import cn.nukkit.plugin.PluginBase;
+import eu.okaeri.configs.ConfigManager;
+import eu.okaeri.configs.yaml.snakeyaml.YamlSnakeYamlConfigurer;
+import top.gomoku.ai.GomokuAi;
+import top.gomoku.board.BaseGomokuBoardBlock;
+import top.gomoku.board.GomokuBoard4x4Block;
 import top.gomoku.board.GomokuBoardBlock;
+import top.gomoku.config.GomokuConfig;
 import top.gomoku.entity.GomokuStoneEntity;
+import top.gomoku.item.GomokuBoard4x4Item;
 import top.gomoku.item.GomokuBoardItem;
 import top.gomoku.ui.GomokuMenu;
 
@@ -31,6 +39,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 管理所有已放置的棋盘，处理放置、交互、范围检测与清理。
@@ -39,6 +50,9 @@ public class GomokuManager implements Listener {
 
     /** 放置棋盘的冷却时间（毫秒）：一次点击可能触发多个交互事件，需去重 */
     private static final long PLACE_COOLDOWN_MS = 500L;
+
+    /** 机器人“思考”停顿，让落子有节奏感（tick 数，20 tick ≈ 1 秒）。 */
+    private static final int AI_THINK_DELAY_TICKS = 10;
 
     private final PluginBase plugin;
     private final Map<String, GomokuBoard> boards = new HashMap<>();
@@ -53,8 +67,104 @@ public class GomokuManager implements Listener {
     /** 首次恢复是否已完成。未完成前禁止写盘，避免用空数据覆盖存档。 */
     private boolean restored;
 
+    /** 插件配置。始终非空：未加载前使用字段默认值（半径 7 格）。 */
+    private GomokuConfig config = new GomokuConfig();
+
+    /**
+     * 存档写盘线程：单线程串行执行，避免并发写文件；主线程只负责生成快照。
+     * 守护线程，关服不阻塞进程退出。
+     */
+    private final ExecutorService saveExecutor = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "Gomoku-Save");
+        thread.setDaemon(true);
+        return thread;
+    });
+
     public GomokuManager(PluginBase plugin) {
         this.plugin = plugin;
+    }
+
+    /** 当前生效的配置。 */
+    public GomokuConfig getConfig() {
+        return config;
+    }
+
+    /** 配置文件。 */
+    private File configFile() {
+        File folder = plugin.getDataFolder();
+        if (!folder.exists() && !folder.mkdirs()) {
+            plugin.getLogger().warning("无法创建插件数据目录：" + folder.getPath());
+        }
+        return new File(folder, "config.yml");
+    }
+
+    /**
+     * 启动时同步加载配置。
+     * <p>
+     * 文件很小，且必须保证 {@link #getConfig()} 在首个 tick（范围检测）前就已可用，
+     * 因此这里不异步；{@code /gomoku reload} 才走异步。
+     */
+    public void loadConfig() {
+        this.config = readConfig();
+    }
+
+    private GomokuConfig readConfig() {
+        return ConfigManager.create(GomokuConfig.class, it -> {
+            it.withConfigurer(new YamlSnakeYamlConfigurer());
+            it.withBindFile(configFile());
+            it.saveDefaults();
+            it.load(true);
+        });
+    }
+
+    /**
+     * 异步重载配置：文件读取与 YAML 解析放到线程池，解析完成后回主线程替换引用并反馈结果。
+     */
+    public void reloadConfig(CommandSender feedback) {
+        Server.getInstance().getScheduler().scheduleTask(plugin, () -> {
+            GomokuConfig loaded = null;
+            String error = null;
+            try {
+                loaded = readConfig();
+            } catch (Exception e) {
+                error = e.getMessage();
+            }
+            final GomokuConfig result = loaded;
+            final String failure = error;
+            Server.getInstance().getScheduler().scheduleTask(plugin, () -> {
+                if (result != null) {
+                    this.config = result;
+                    feedback.sendMessage("§a配置已重载：玩家识别半径 " + result.getPlayerRange() + " 格。");
+                    plugin.getLogger().info("配置已重载（playerRange=" + result.getPlayerRange() + "）");
+                } else {
+                    feedback.sendMessage("§c配置重载失败：" + failure);
+                    plugin.getLogger().warning("配置重载失败：" + failure);
+                }
+            }, false);
+        }, true);
+    }
+
+    /**
+     * 静默发放战胜机器人的奖励：按等级读取配置逐项加入背包，放不下的掉落在玩家脚下。
+     * <p>
+     * 不发送任何提示（玩家要求奖励不播报）。本方法在主线程调用（落子流程内）。
+     */
+    public void giveAiReward(Player player, int level) {
+        for (Map<String, Integer> entry : config.getRewards().forLevel(level)) {
+            Integer id = entry.get("id");
+            Integer count = entry.get("count");
+            if (id == null || count == null || count <= 0) {
+                continue;
+            }
+            Item reward = Item.get(id, 0, count);
+            if (reward == null || reward.getId() == 0) {
+                plugin.getLogger().warning("奖励配置中的物品 ID 无效：" + id);
+                continue;
+            }
+            for (Item overflow : player.getInventory().addItem(reward)) {
+                player.getLevel().dropItem(player, overflow);
+            }
+        }
     }
 
     /** 标记棋盘状态已变更，等待下一次 tick 统一保存。 */
@@ -95,16 +205,16 @@ public class GomokuManager implements Listener {
 
         // 右键：PC 鼠标右键，或触屏对可交互方块的使用。用于放置棋盘或打开棋盘菜单。
         if (action == PlayerInteractEvent.Action.RIGHT_CLICK_BLOCK) {
-            if (item instanceof GomokuBoardItem) {
+            if (item instanceof GomokuBoardItem || item instanceof GomokuBoard4x4Item) {
                 // 放置棋盘会真正改动世界，仍遵守服务端取消（如出生点保护）
                 if (event.isCancelled() || !canPlace(player)) {
                     event.setCancelled(true);
                     return;
                 }
-                tryPlace(player, event, clicked);
+                tryPlace(player, event, clicked, item instanceof GomokuBoard4x4Item ? 4 : 2);
                 return;
             }
-            if (clicked instanceof GomokuBoardBlock) {
+            if (clicked instanceof BaseGomokuBoardBlock) {
                 useBoardAt(player, event, clicked);
             }
             return;
@@ -151,7 +261,7 @@ public class GomokuManager implements Listener {
         return true;
     }
 
-    private void tryPlace(Player player, PlayerInteractEvent event, Block clicked) {
+    private void tryPlace(Player player, PlayerInteractEvent event, Block clicked, int size) {
         BlockFace face = event.getFace();
         if (face == null) {
             return;
@@ -162,34 +272,27 @@ public class GomokuManager implements Listener {
         int bz = target.getFloorZ();
         Level level = player.getLevel();
 
-        for (int dx = 0; dx < 2; dx++) {
-            for (int dz = 0; dz < 2; dz++) {
+        for (int dx = 0; dx < size; dx++) {
+            for (int dz = 0; dz < size; dz++) {
                 Block b = level.getBlock(bx + dx, by, bz + dz);
                 if (!b.isAir() && !b.canBeReplaced()) {
-                    player.sendMessage("§c空间不足，放置棋盘需要 2x2 空地。");
+                    player.sendMessage("§c空间不足，放置棋盘需要 " + size + "x" + size + " 空地。");
                     return;
                 }
             }
         }
         for (GomokuBoard board : boards.values()) {
             if (board.getLevel() == level && board.getBaseY() == by
-                    && Math.abs(board.getBaseX() - bx) < 2
-                    && Math.abs(board.getBaseZ() - bz) < 2) {
+                    && overlaps(board, bx, bz, size)) {
                 player.sendMessage("§c这里已经有棋盘了。");
                 return;
             }
         }
 
         event.setCancelled(true);
-        for (int dx = 0; dx < 2; dx++) {
-            for (int dz = 0; dz < 2; dz++) {
-                GomokuBoardBlock block = new GomokuBoardBlock();
-                block.setPosition(dx + dz * 2);
-                level.setBlock(new Vector3(bx + dx, by, bz + dz), block, true);
-            }
-        }
+        placeBlocks(level, bx, by, bz, size);
 
-        GomokuBoard board = new GomokuBoard(this, level, bx, by, bz);
+        GomokuBoard board = new GomokuBoard(this, level, bx, by, bz, size);
         board.spawnEntity();
         boards.put(board.getKey(), board);
         markDirty();
@@ -202,7 +305,27 @@ public class GomokuManager implements Listener {
             hand.setCount(hand.getCount() - 1);
             player.getInventory().setItemInHand(hand);
         }
-        player.sendMessage("§a已放置五子棋棋盘。右键棋盘可打开菜单。");
+        player.sendMessage("§a已放置" + (size >= 4 ? "4x4 " : "") + "五子棋棋盘。右键棋盘可打开菜单。");
+    }
+
+    /** 按边长铺设棋盘方块，position = dx + dz * size。 */
+    private void placeBlocks(Level level, int bx, int by, int bz, int size) {
+        for (int dx = 0; dx < size; dx++) {
+            for (int dz = 0; dz < size; dz++) {
+                BaseGomokuBoardBlock block = size >= 4 ? new GomokuBoard4x4Block() : new GomokuBoardBlock();
+                block.setPosition(dx + dz * size);
+                level.setBlock(new Vector3(bx + dx, by, bz + dz), block, true);
+            }
+        }
+    }
+
+    /** 两个棋盘的水平区域是否重叠（允许尺寸不同）。 */
+    private boolean overlaps(GomokuBoard board, int bx, int bz, int size) {
+        int ax1 = board.getBaseX();
+        int az1 = board.getBaseZ();
+        int ax2 = ax1 + board.getBoardSize();
+        int az2 = az1 + board.getBoardSize();
+        return ax1 < bx + size && bx < ax2 && az1 < bz + size && bz < az2;
     }
 
     private void useBoard(Player player, GomokuBoard board) {
@@ -226,9 +349,15 @@ public class GomokuManager implements Listener {
         }
     }
 
+    /** 延迟一 tick 重新弹出指定玩家的棋盘菜单，供人机对战的分步表单使用。 */
+    public void reopenMenu(Player player, GomokuBoard board) {
+        Server.getInstance().getScheduler().scheduleDelayedTask(plugin,
+                () -> GomokuMenu.open(player, board), 1);
+    }
+
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onBreak(BlockBreakEvent event) {
-        if (event.getBlock() instanceof GomokuBoardBlock) {
+        if (event.getBlock() instanceof BaseGomokuBoardBlock) {
             event.setCancelled(true);
         }
     }
@@ -243,10 +372,11 @@ public class GomokuManager implements Listener {
         if (boards.remove(board.getKey()) == null) {
             return;
         }
+        boolean large = board.getBoardSize() >= 4;
         board.remove();
         markDirty();
-        player.getInventory().addItem(new GomokuBoardItem());
-        player.sendMessage("§e已收起五子棋棋盘。");
+        player.getInventory().addItem(large ? new GomokuBoard4x4Item() : new GomokuBoardItem());
+        player.sendMessage(large ? "§e已收起 4×4 五子棋棋盘。" : "§e已收起五子棋棋盘。");
     }
 
     @EventHandler
@@ -303,13 +433,37 @@ public class GomokuManager implements Listener {
                     }
                 }
             }
+            // 轮到机器人：停顿片刻后异步计算落点，避免阻塞主线程
+            if (board.isAiTurn() && board.beginThinking()) {
+                scheduleAiMove(board);
+            }
         }
+    }
+
+    /**
+     * 派发一次机器人落子：先延迟制造“思考”停顿，再在线程池中计算，最后回到主线程落子。
+     */
+    private void scheduleAiMove(GomokuBoard board) {
+        Server.getInstance().getScheduler().scheduleDelayedTask(plugin, () -> {
+            int[][] snapshot = board.copyGrid();
+            int aiColor = board.getAiColor();
+            int level = board.getAiLevel();
+            Server.getInstance().getScheduler().scheduleTask(plugin, () -> {
+                int[] move = GomokuAi.bestMove(snapshot, aiColor, level);
+                Server.getInstance().getScheduler().scheduleTask(plugin, () -> {
+                    board.finishThinking();
+                    if (move != null && board.aiPlace(move[0], move[1])) {
+                        reopenForSeats(board);
+                    }
+                }, false);
+            }, true);
+        }, AI_THINK_DELAY_TICKS);
     }
 
     /**
      * 持久化文件：每行一条记录，用 {@code |} 分隔（世界名不会含该字符）。
      * <ul>
-     *     <li>{@code B|世界|X|Y|Z|是否进行中|当前回合|胜者UUID}：一个棋盘的头部</li>
+     *     <li>{@code B|世界|X|Y|Z|是否进行中|当前回合|胜者UUID|机器人等级|机器人棋色|棋盘边长}：一个棋盘的头部</li>
      *     <li>{@code S|玩家UUID|棋色}：一条座位记录</li>
      *     <li>{@code R|三进制行值...}：15 行落子状态</li>
      * </ul>
@@ -322,17 +476,16 @@ public class GomokuManager implements Listener {
         return new File(folder, "boards.txt");
     }
 
-    /** 把当前所有棋盘写入磁盘。 */
-    public void save() {
-        if (!restored) {
-            return;
-        }
+    /** 生成当前所有棋盘的状态快照（读取棋盘对象，必须在主线程调用）。 */
+    private List<String> snapshot() {
         List<String> lines = new ArrayList<>();
         for (GomokuBoard board : boards.values()) {
             UUID winner = board.getWinner();
             lines.add("B|" + board.getLevel().getName() + "|" + board.getBaseX() + "|" + board.getBaseY()
                     + "|" + board.getBaseZ() + "|" + board.isRunning() + "|" + board.getTurn()
-                    + "|" + (winner == null ? "" : winner));
+                    + "|" + (winner == null ? "" : winner)
+                    + "|" + board.getAiLevel() + "|" + board.getAiColor()
+                    + "|" + board.getBoardSize());
             for (UUID id : board.getSeats()) {
                 lines.add("S|" + id + "|" + board.seatColor(id));
             }
@@ -342,8 +495,48 @@ public class GomokuManager implements Listener {
             }
             lines.add(row.toString());
         }
+        return lines;
+    }
+
+    /**
+     * 把当前所有棋盘写入磁盘。
+     * <p>
+     * 主线程只生成快照，实际写盘交给单线程串行执行，避免每步棋都占用主线程做磁盘 IO。
+     */
+    public void save() {
+        if (!restored || saveExecutor.isShutdown()) {
+            return;
+        }
+        List<String> lines = snapshot();
+        File file = storageFile();
+        saveExecutor.execute(() -> writeLines(file, lines));
+    }
+
+    /** 关服兜底：同步排队写盘并等待队列中已有的写入全部完成。 */
+    public void saveNow() {
+        if (!restored) {
+            return;
+        }
+        List<String> lines = snapshot();
+        File file = storageFile();
+        if (saveExecutor.isShutdown()) {
+            writeLines(file, lines);
+            return;
+        }
+        saveExecutor.execute(() -> writeLines(file, lines));
+        saveExecutor.shutdown();
         try {
-            Files.write(storageFile().toPath(), lines, StandardCharsets.UTF_8);
+            if (!saveExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                plugin.getLogger().warning("等待棋盘数据写入超时。");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void writeLines(File file, List<String> lines) {
+        try {
+            Files.write(file.toPath(), lines, StandardCharsets.UTF_8);
         } catch (IOException e) {
             plugin.getLogger().warning("保存棋盘数据失败：" + e.getMessage());
         }
@@ -401,18 +594,13 @@ public class GomokuManager implements Listener {
             plugin.getLogger().warning("棋盘所在世界未加载，跳过：" + data.level);
             return;
         }
-        GomokuBoard board = new GomokuBoard(this, level, data.x, data.y, data.z);
+        GomokuBoard board = new GomokuBoard(this, level, data.x, data.y, data.z, data.boardSize);
         board.restore(data.seats, data.colors,
                 data.rows != null ? data.rows : new int[GomokuBoard.SIZE],
                 data.running, data.turn, data.winner);
+        board.restoreAi(data.aiLevel, data.aiColor);
         // 自定义方块 id 重启后可能重新分配，这里按坐标重放一遍，确保棋盘方块仍然有效
-        for (int dx = 0; dx < 2; dx++) {
-            for (int dz = 0; dz < 2; dz++) {
-                GomokuBoardBlock block = new GomokuBoardBlock();
-                block.setPosition(dx + dz * 2);
-                level.setBlock(new Vector3(data.x + dx, data.y, data.z + dz), block, true);
-            }
-        }
+        placeBlocks(level, data.x, data.y, data.z, data.boardSize);
         board.spawnEntity();
         boards.put(board.getKey(), board);
     }
@@ -445,6 +633,9 @@ public class GomokuManager implements Listener {
         final boolean running;
         final int turn;
         final UUID winner;
+        final int aiLevel;
+        final int aiColor;
+        final int boardSize;
         final List<UUID> seats = new ArrayList<>();
         final Map<UUID, Integer> colors = new HashMap<>();
         int[] rows;
@@ -457,6 +648,9 @@ public class GomokuManager implements Listener {
             this.running = parts.length > 5 && Boolean.parseBoolean(parts[5]);
             this.turn = parseInt(parts.length > 6 ? parts[6] : "1", GomokuBoard.BLACK);
             this.winner = parts.length > 7 ? parseUuid(parts[7]) : null;
+            this.aiLevel = parseInt(parts.length > 8 ? parts[8] : "0", 0);
+            this.aiColor = parseInt(parts.length > 9 ? parts[9] : "0", 0);
+            this.boardSize = parseInt(parts.length > 10 ? parts[10] : "2", 2);
         }
     }
 }
