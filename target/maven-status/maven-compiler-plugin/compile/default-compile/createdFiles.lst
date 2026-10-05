@@ -1,0 +1,10 @@
+top\gomoku\game\GomokuManager$SavedBoard.class
+top\gomoku\item\GomokuBoardItem.class
+top\gomoku\ui\Simple.class
+top\gomoku\GomokuPlugin.class
+top\gomoku\ui\GomokuMenu.class
+top\gomoku\game\GomokuBoard.class
+top\gomoku\entity\GomokuStoneEntity.class
+top\gomoku\game\GomokuManager.class
+top\gomoku\ui\Modal.class
+top\gomoku\board\GomokuBoardBlock.class

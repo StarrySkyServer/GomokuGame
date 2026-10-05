@@ -1,0 +1,14 @@
+{
+  "resource_pack_name": "Gomoku",
+  "texture_name": "atlas.terrain",
+  "padding": 8,
+  "num_mip_levels": 4,
+  "texture_data": {
+    "gomoku_board_top": {
+      "textures": "textures/gomoku/board_surface"
+    },
+    "gomoku_board_side": {
+      "textures": "textures/gomoku/board_frame"
+    }
+  }
+}

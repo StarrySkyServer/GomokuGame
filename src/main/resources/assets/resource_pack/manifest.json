@@ -1,0 +1,17 @@
+{
+    "format_version": 2,
+    "header": {
+        "name": "Gomoku Board Resource Pack",
+        "description": "五子棋棋盘与棋子资源（Nukkit-MOT 服务端内置）",
+        "uuid": "825cc2a1-b604-4fd5-b9d0-f00046ac9e23",
+        "version": [1, 5, 0],
+        "min_engine_version": [1, 17, 0]
+    },
+    "modules": [
+        {
+            "type": "resources",
+            "uuid": "51e8973f-e263-443d-ad64-b902a3da8c9d",
+            "version": [1, 5, 0]
+        }
+    ]
+}

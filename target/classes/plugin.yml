@@ -1,0 +1,18 @@
+name: Gomoku
+main: top.gomoku.GomokuPlugin
+version: "1.0.0"
+api: ["1.0.0"]
+author: MysteriousHim
+description: 五子棋（实体棋子 + 自定义方块棋盘）
+load: STARTUP
+
+commands:
+  gomoku:
+    description: 获取五子棋棋盘物品 / 管理棋局
+    usage: "/gomoku [board]"
+    permission: gomoku.command
+
+permissions:
+  gomoku.command:
+    description: 允许使用 /gomoku 命令
+    default: op
