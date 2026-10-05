@@ -1372,9 +1372,9 @@
         },
         "board_size": {
           "scale": [
-            "q.property('gomoku:large') ? 1.6 : 1",
+            "q.property('gomoku:size') == 4 ? 3.2 : 1.6",
             1,
-            "q.property('gomoku:large') ? 1.6 : 1"
+            "q.property('gomoku:size') == 4 ? 3.2 : 1.6"
           ]
         }
       }

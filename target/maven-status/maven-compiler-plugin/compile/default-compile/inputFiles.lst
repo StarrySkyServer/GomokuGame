@@ -1,8 +1,14 @@
+D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\ai\GomokuAi.java
+D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\board\BaseGomokuBoardBlock.java
+D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\board\BoardBlocks.java
+D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\board\GomokuBoard4x4Block.java
 D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\board\GomokuBoardBlock.java
+D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\config\GomokuConfig.java
 D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\entity\GomokuStoneEntity.java
 D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\game\GomokuBoard.java
 D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\game\GomokuManager.java
 D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\GomokuPlugin.java
+D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\item\GomokuBoard4x4Item.java
 D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\item\GomokuBoardItem.java
 D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\ui\GomokuMenu.java
 D:\CodeProject\Gobang\GomokuPlugin\src\main\java\top\gomoku\ui\Modal.java

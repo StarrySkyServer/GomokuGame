@@ -8,11 +8,11 @@ load: STARTUP
 
 commands:
   gomoku:
-    description: 获取五子棋棋盘物品 / 管理棋局
-    usage: "/gomoku [board]"
+    description: 获取五子棋棋盘物品 / 重载配置
+    usage: "/gomoku [4x4|reload]"
     permission: gomoku.command
 
 permissions:
   gomoku.command:
-    description: 允许使用 /gomoku 命令
+    description: 允许使用 /gomoku 命令（发放棋盘 / 重载配置）
     default: op
