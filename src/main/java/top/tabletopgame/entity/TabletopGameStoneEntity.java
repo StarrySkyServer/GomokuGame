@@ -1,0 +1,210 @@
+package top.tabletopgame.entity;
+
+import cn.nukkit.Player;
+import cn.nukkit.entity.Entity;
+import cn.nukkit.entity.custom.CustomEntity;
+import cn.nukkit.entity.custom.EntityDefinition;
+import cn.nukkit.entity.data.Vector3fEntityData;
+import cn.nukkit.entity.data.property.EntityProperty;
+import cn.nukkit.entity.data.property.IntEntityProperty;
+import cn.nukkit.event.entity.EntityDamageEvent;
+import cn.nukkit.level.format.FullChunk;
+import cn.nukkit.nbt.tag.CompoundTag;
+import top.tabletopgame.game.TabletopGameBoard;
+
+/**
+ * 棋子渲染实体，对应资源包中的 tabletopgame:stone。
+ * <p>
+ * 棋盘状态通过实体属性 {@code tabletopgame:row_0 .. tabletopgame:row_14}（三进制编码）同步给客户端，
+ * 客户端动画据此缩放对应骨骼来显示黑白棋子；{@code hover}/{@code last} 控制准星高亮与最后一手标记，
+ * {@code size} 表示棋盘边长（2 = 标准 2x2，4 = 大号 4x4），客户端据此把整个网格放大到 1.6 / 3.2 倍。
+ */
+public class TabletopGameStoneEntity extends Entity implements CustomEntity {
+
+    public static final String IDENTIFIER = "tabletopgame:stone";
+
+    public static final int SIZE = 15;
+
+    /** 一行 15 格三进制最大值：3^15 - 1 */
+    public static final int MAX_ROW_VALUE = 14348906;
+
+    public static final String P_HOVER = "tabletopgame:hover";
+    public static final String P_LAST = "tabletopgame:last";
+    public static final String P_SIZE = "tabletopgame:size";
+
+    public static final EntityDefinition DEF = EntityDefinition.builder()
+            .identifier(IDENTIFIER)
+            // 基岩版客户端会为实体绘制一块软边阴影，其大小取自实体“定义”里的碰撞箱，
+            // 与 metadata 的 DATA_BOUNDING_BOX_WIDTH/HEIGHT（只决定准星命中箱）无关，
+            // 所以此前把命中箱设到 0.001 也消不掉棋盘中央那块阴影。
+            // 自定义实体在 Nukkit 里无法直接声明碰撞箱，只能通过运行时标识符（bid）
+            // 继承一个不绘制阴影的原版实体：armor_stand 明确会禁用实体阴影，
+            // 且其行为对纯展示实体没有副作用（模型仍由资源包的 tabletopgame:stone 客户端定义渲染）。
+            .parentEntity("minecraft:armor_stand")
+            .spawnEgg(false)
+            .implementation(TabletopGameStoneEntity.class)
+            .build();
+
+    public static String rowName(int row) {
+        return "tabletopgame:row_" + row;
+    }
+
+    /**
+     * 注册客户端侧实体属性定义。必须在任何实体生成前调用（插件 onLoad）。
+     */
+    public static void registerProperties() {
+        for (int row = 0; row < SIZE; row++) {
+            EntityProperty.register(IDENTIFIER, new IntEntityProperty(rowName(row), 0, MAX_ROW_VALUE, 0));
+        }
+        EntityProperty.register(IDENTIFIER, new IntEntityProperty(P_HOVER, 0, SIZE * SIZE, 0));
+        EntityProperty.register(IDENTIFIER, new IntEntityProperty(P_LAST, 0, SIZE * SIZE, 0));
+        EntityProperty.register(IDENTIFIER, new IntEntityProperty(P_SIZE, 0, 4, 2));
+    }
+
+    public TabletopGameStoneEntity(FullChunk chunk, CompoundTag nbt) {
+        super(chunk, nbt);
+    }
+
+    @Override
+    public EntityDefinition getEntityDefinition() {
+        return DEF;
+    }
+
+    @Override
+    public int getNetworkId() {
+        return DEF.getRuntimeId();
+    }
+
+    /**
+     * 该实体只负责渲染棋子，不参与碰撞与射线检测。
+     * <p>
+     * 这三个值会被 Nukkit 通过 {@code DATA_BOUNDING_BOX_WIDTH/HEIGHT} 同步给客户端，
+     * 决定客户端准星的实体命中箱。若沿用 2x2x0.2 会正好盖住棋盘顶面，导致点击棋盘
+     * 命中的是实体而非方块（右键弹不出菜单、左键无法破坏收回）。
+     * 设为极小值后射线会直接穿过实体命中棋盘方块。
+     * 棋子模型的渲染由资源包几何体按实体坐标绘制，与命中箱大小无关。
+     */
+    @Override
+    public float getHeight() {
+        return 0.001f;
+    }
+
+    @Override
+    public float getWidth() {
+        return 0.001f;
+    }
+
+    @Override
+    public float getLength() {
+        return 0.001f;
+    }
+
+    @Override
+    protected void initEntity() {
+        super.initEntity();
+        this.setImmobile(true);
+        this.setDataFlag(DATA_FLAGS, DATA_FLAG_GRAVITY, false);
+        this.setDataFlag(DATA_FLAGS, DATA_FLAG_HAS_COLLISION, false);
+        this.setNameTagVisible(false);
+        this.setNameTagAlwaysVisible(false);
+        this.setCanBeSavedWithChunk(false);
+        // 再同步一个极小碰撞箱，双保险：即便某些版本按 metadata 绘制阴影/命中箱也能消掉
+        this.setDataProperty(new Vector3fEntityData(DATA_COLLISION_BOX, 0.001f, 0.001f, 0.001f));
+        this.setIntEntityProperty(P_SIZE, 2);
+    }
+
+    @Override
+    public boolean canCollide() {
+        return false;
+    }
+
+    @Override
+    public boolean canBePushed() {
+        return false;
+    }
+
+    private TabletopGameBoard board;
+
+    public void setBoard(TabletopGameBoard board) {
+        this.board = board;
+    }
+
+    public TabletopGameBoard getBoard() {
+        return board;
+    }
+
+    /**
+     * 棋子实体仅用于渲染，不参与破坏与收回：攻击无效，收回棋盘只能靠破坏棋盘方块。
+     */
+    @Override
+    public boolean attack(EntityDamageEvent source) {
+        return false;
+    }
+
+    /**
+     * 禁止一切击杀途径，使 {@code /kill @e} 等指令无法清除该实体（类似箱子那样不可杀死）。
+     * <p>
+     * 棋子的唯一清除方式是破坏棋盘方块，届时由 {@code TabletopGameBoard.remove()}
+     * 直接调用 {@code close()}，不经过 {@code kill()}，所以此处留空不影响正常收回。
+     */
+    @Override
+    public void kill() {
+    }
+
+    /** 批量提交标记：置位期间所有属性变更只改本地值，不发包。 */
+    private boolean batching;
+
+    /**
+     * 开始批量提交属性。棋盘有 15 个行属性，开局/清盘若逐条同步会连发 15 个元数据包，
+     * 用 beginBatch/endBatch 包住后整批只发一个。
+     */
+    public void beginBatch() {
+        this.batching = true;
+    }
+
+    /** 结束批量提交并一次性同步全部变更。 */
+    public void endBatch() {
+        this.batching = false;
+        this.syncProperties();
+    }
+
+    public void setRow(int row, int value) {
+        if (this.setIntEntityProperty(rowName(row), value)) {
+            this.sync();
+        }
+    }
+
+    /** 设置棋盘边长（2 = 标准，4 = 大号），客户端据此缩放网格。 */
+    public void setBoardSize(int size) {
+        if (this.setIntEntityProperty(P_SIZE, size >= 4 ? 4 : 2)) {
+            this.sync();
+        }
+    }
+
+    public void setHover(int index) {
+        if (this.setIntEntityProperty(P_HOVER, index)) {
+            this.sync();
+        }
+    }
+
+    public void setLast(int index) {
+        if (this.setIntEntityProperty(P_LAST, index)) {
+            this.sync();
+        }
+    }
+
+    /** 单条属性变更后的同步；处于批量模式时跳过，由 endBatch 统一发包。 */
+    private void sync() {
+        if (this.batching) {
+            return;
+        }
+        this.syncProperties();
+    }
+
+    public void syncProperties() {
+        if (this.getViewers().isEmpty()) {
+            return;
+        }
+        this.sendData(this.getViewers().values().toArray(new Player[0]));
+    }
+}

@@ -1,0 +1,414 @@
+package top.tabletopgame.ui;
+
+import cn.nukkit.Player;
+import top.tabletopgame.economy.EconomyHook;
+import top.tabletopgame.game.TabletopGameBoard;
+
+import java.util.Locale;
+import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.BooleanSupplier;
+
+/**
+ * 五子棋棋盘菜单：根据当前座位、选色、规则与赌博状态动态生成。
+ *
+ * <p>状态机：
+ * <ul>
+ *     <li>无人入座：选择执白 / 选择执黑 + 三个等级的单人对战（开启赌博模式后隐藏）
+ *     + 更改规则 + 赌博开关 + 关于规则</li>
+ *     <li>已选单人对战、等待选色（本人）：选择执白 / 选择执黑 + 退出棋局（此时已占座，对他人视为满员）</li>
+ *     <li>一人入座（本人）：三个等级的单人对战 + 退出棋局</li>
+ *     <li>一人入座（其他人）：加入对方棋色（若该座位已选单人对战则视为满员）</li>
+ *     <li>两人入座（先加入者）：开始棋局 +（未开启赌博时才有的）继承棋局 + 退出棋局</li>
+ *     <li>两人入座（后加入者）：退出棋局</li>
+ *     <li>对局进行中：不弹菜单（Swap2 开局选择阶段除外，见 {@link #openSwapDecision}）</li>
+ * </ul>
+ *
+ * <p>「更改规则」「赌博模式开关」「关于规则」都只在「0 人入座」时出现，且只有先打开菜单的人能操作
+ * （占用锁见 {@link TabletopGameBoard#tryAcquireMenu}）。尾部顺序固定为：更改规则 → 赌博开关 → 关于规则。
+ *
+ * <p>0 人入座的菜单是独占的：表单弹出后无法从服务端强制收回，因此除了打开时校验占用权，
+ * 每个按钮动作执行前还会用 {@link TabletopGameBoard#holdsMenu} 再校验一次并续期，
+ * 保证超时或被他人接管后，旧表单上的点击不再生效。
+ *
+ * <p>占用者超时（{@code menuLockSeconds}，默认 30 秒）或已下线时，
+ * 由 {@link TabletopGameBoard#tickMenuHolder()} 主动关闭其客户端上的表单并释放占用，
+ * 避免「开着表单走人」把菜单一直占住。超时兜底仅作用于「0 人入座」的表单；
+ * 一旦有人入座（含已选单人对战），菜单不再加锁，也不再有超时兜底。
+ */
+public final class TabletopGameMenu {
+
+    private static final String[] AI_LEVELS = {"入门", "进阶", "大师"};
+
+    private TabletopGameMenu() {
+    }
+
+    public static void open(Player player, TabletopGameBoard board) {
+        if (board.isRunning()) {
+            return;
+        }
+        UUID id = player.getUniqueId();
+        int myColor = board.seatColor(id);
+        boolean pendingMine = board.isPendingAiSeat(id);
+        // 0 人入座时菜单独占：同一时间只允许一人操作，避免两人同时抢座位/改设置
+        if (myColor == 0 && !pendingMine && board.seatCount() == 0 && !board.tryAcquireMenu(player)) {
+            player.sendTip("§c有人正在操作该棋盘，请稍候。");
+            return;
+        }
+        Simple form = new Simple("五子棋 [Beta]", board.statusText());
+        if (pendingMine) {
+            // 已选单人对战、等待选色：此处只决定自己执黑/执白，机器人随后坐到对面
+            buildPendingColor(form, player, board);
+        } else if (myColor != 0) {
+            buildSeated(form, player, board);
+        } else {
+            buildVisitor(form, player, board);
+        }
+        if (form.buttonCount() == 0) {
+            return;
+        }
+        if (board.seatCount() == 0) {
+            form.onClose(() -> board.releaseMenu(player));
+        }
+        form.show(player);
+    }
+
+    /**
+     * 从子表单返回上级菜单（关闭规则表单、切换赌博开关等）。
+     * <p>
+     * 只有仍持有「0 人入座」菜单占用权时才重新弹出：自动关闭（超时/下线）会清空占用，
+     * 此时即便旧表单的关闭回调被触发，也不会把菜单又弹回来。
+     */
+    public static void reopen(Player player, TabletopGameBoard board) {
+        if (board.seatCount() == 0 && !board.holdsMenu(player)) {
+            return;
+        }
+        open(player, board);
+    }
+
+    /**
+     * 0 人入座菜单的动作级校验：表单弹出后无法从服务端强制收回，超时或被他人接管后旧表单仍在客户端上，
+     * 因此每个按钮动作执行前都要再校验一次占用权，保证失效后点击不再生效。
+     */
+    private static boolean checkMenu(Player player, TabletopGameBoard board) {
+        if (board.holdsMenu(player)) {
+            return true;
+        }
+        player.sendTip("§c该菜单已失效或被他人接管，请重新点击棋盘。");
+        return false;
+    }
+
+    /** 已入座玩家看到的菜单。 */
+    private static void buildSeated(Simple form, Player player, TabletopGameBoard board) {
+        UUID id = player.getUniqueId();
+        if (board.seatCount() >= 2) {
+            if (board.isFirstJoiner(id)) {
+                addStartButtons(form, player, board);
+            }
+            form.add("退出棋局", () -> board.leave(id));
+        } else {
+            addAiButtons(form, player, board);
+            form.add("退出棋局", () -> board.leave(id));
+        }
+    }
+
+    /** 未入座玩家看到的菜单。 */
+    private static void buildVisitor(Simple form, Player player, TabletopGameBoard board) {
+        int count = board.seatCount();
+        if (count == 0) {
+            addColorButtons(form, player, board);
+            // 赌博模式与单人对战互斥：开启赌博后不再提供单人对战入口
+            if (!board.isGamblingEnabled()) {
+                addAiButtons(form, player, board);
+            }
+            // 尾部依次为：更改规则、赌博开关、关于规则
+            addRuleButton(form, player, board);
+            addGamblingToggle(form, player, board);
+            addRuleInfoButton(form, player, board);
+        } else if (count == 1) {
+            // 对方已选单人对战：座位实际已被玩家 + 机器人占满，不再允许他人加入
+            if (board.hasPendingAi()) {
+                player.sendTip("§c对方正在进行单人对战，座位已满。");
+                return;
+            }
+            if (board.isColorTaken(TabletopGameBoard.WHITE)) {
+                form.add("加入执黑方", () -> board.join(player, TabletopGameBoard.BLACK));
+            } else {
+                form.add("加入执白方", () -> board.join(player, TabletopGameBoard.WHITE));
+            }
+        } else {
+            player.sendTip("§c座位已满（2 人），无法加入。");
+        }
+    }
+
+    /**
+     * 已选择单人对战、等待选色的玩家菜单。
+     * <p>
+     * 该玩家在点「单人对战」时已占座，因此这里没有 0 人菜单的占用锁与超时兜底；
+     * 选色只决定自己执黑还是执白，机器人随后自动坐到对面。
+     */
+    private static void buildPendingColor(Simple form, Player player, TabletopGameBoard board) {
+        form.add("随机选择", () -> {
+            int color = ThreadLocalRandom.current().nextBoolean() ? TabletopGameBoard.BLACK : TabletopGameBoard.WHITE;
+            if (board.chooseAiColor(player, color)) {
+                board.reopenMenu(player);
+            }
+        });
+        form.add("选择执白方", () -> {
+            if (board.chooseAiColor(player, TabletopGameBoard.WHITE)) {
+                board.reopenMenu(player);
+            }
+        });
+        form.add("选择执黑方", () -> {
+            if (board.chooseAiColor(player, TabletopGameBoard.BLACK)) {
+                board.reopenMenu(player);
+            }
+        });
+        form.add("退出棋局", () -> board.leave(player.getUniqueId()));
+    }
+
+    /**
+     * 「开始棋局」相关按钮。统一黑棋先手，因此不再提供先后手选择。
+     * <p>
+     * 开启赌博模式时，「继承棋局」不出现；点击「开始棋局」先进入下注金额输入表单。
+     */
+    private static void addStartButtons(Simple form, Player player, TabletopGameBoard board) {
+        if (board.isGamblingActive()) {
+            form.add("开始棋局", () -> board.later(() -> openBetInput(player, board)));
+            return;
+        }
+        form.add("开始棋局", board::start);
+        // 已分胜负或平局后不再提供「继承棋局」，避免在同一盘已结束的棋上重复获胜、重复领奖
+        if (!board.isFinished()) {
+            form.add("开始棋局（继承棋局）", board::resume);
+        }
+    }
+
+    /**
+     * 赌博开关：仅「0 人入座」时出现，排在「更改规则」之后。点击后仍停留在当前（0 人入座）菜单。
+     * <p>
+     * 经济插件是强依赖（plugin.yml 的 {@code depend}），缺失时本插件不会被加载，
+     * 因此这里无需再判断经济插件是否可用。
+     */
+    private static void addGamblingToggle(Simple form, Player player, TabletopGameBoard board) {
+        if (!board.canGamble()) {
+            return;
+        }
+        if (board.isGamblingEnabled()) {
+            form.add("关闭赌博模式", () -> {
+                if (!checkMenu(player, board)) {
+                    return;
+                }
+                board.setGamblingEnabled(false);
+                board.reopenMenu(player);
+            });
+        } else {
+            form.add("开启赌博模式", () -> {
+                if (!checkMenu(player, board)) {
+                    return;
+                }
+                board.setGamblingEnabled(true);
+                board.reopenMenu(player);
+            });
+        }
+    }
+
+    /** 更改规则入口：仅「0 人入座」时出现，排在尾部功能区首位。 */
+    private static void addRuleButton(Simple form, Player player, TabletopGameBoard board) {
+        form.add("更改规则", () -> {
+            if (checkMenu(player, board)) {
+                board.later(() -> openRuleMenu(player, board));
+            }
+        });
+    }
+
+    /** 规则选择表单：只显示当前规则，详细说明见「关于规则」；选中后自动回到上一级菜单。 */
+    private static void openRuleMenu(Player player, TabletopGameBoard board) {
+        Simple form = new Simple("五子棋 · 更改规则 [Beta]",
+                "§7当前规则：§f" + TabletopGameBoard.ruleName(board.getRule()));
+        form.add("休闲模式", () -> selectRule(player, board, TabletopGameBoard.RULE_CASUAL));
+        form.add("Swap2", () -> selectRule(player, board, TabletopGameBoard.RULE_SWAP2));
+        form.onClose(() -> board.reopenMenu(player));
+        form.show(player);
+    }
+
+    /**
+     * 「关于规则」入口：仅「0 人入座」时出现。
+     * <p>
+     * 点进去即视作离开「0 人入座」页面：立即释放菜单占用锁，其他人可正常操作棋盘；
+     * 该表单也不再受超时兜底影响（占用锁已释放），关闭后不会返回上一级。
+     */
+    private static void addRuleInfoButton(Simple form, Player player, TabletopGameBoard board) {
+        form.add("关于规则", () -> {
+            if (checkMenu(player, board)) {
+                board.releaseMenu(player);
+                board.later(() -> openRuleInfo(player, board));
+            }
+        });
+    }
+
+    /** 「关于规则」表单：只展示说明文字，仅一个「退出」按钮，关闭后不返回上一级。 */
+    private static void openRuleInfo(Player player, TabletopGameBoard board) {
+        Simple form = new Simple("五子棋 · 关于规则 [Beta]",
+                "§7当前规则：§f" + TabletopGameBoard.ruleName(board.getRule()) + "\n\n"
+                        + "§f【休闲模式】\n"
+                        + "§7· 标准五子棋，黑先白后，一人一手；\n"
+                        + "§7· 任意一方在横、竖、斜任一方向连成 5 子即胜；\n"
+                        + "§7· 长连（6 子及以上）同样算胜。\n\n"
+                        + "§f【Swap2】\n"
+                        + "§7· 开局由「假先手」在盘面任意位置摆 3 子，顺序为先黑、再白、再黑；\n"
+                        + "§7· 随后「假后手」三选一：继续执白 / 交换执黑 / 再落 2 子（先白后黑）；\n"
+                        + "§7· 若选择再落 2 子，则由「假先手」二选一：继续执黑 / 交换执白；\n"
+                        + "§7· 开局结束后回归一人一手，由白方落下一子；\n"
+                        + "§7· 长连（6 子及以上）对双方都不算胜，对局继续。\n\n"
+                        + "§f【角色与选色】\n"
+                        + "§7· 选黑者 = 假先手（摆 3 子），选白者 = 假后手（做选择）；\n"
+                        + "§7· 单人对战时你选白，则由机器人执黑先摆 3 子，由你来做选择。");
+        // 仅一个「退出」按钮：关闭后不返回上一级（进入本表单时已释放 0 人菜单占用）
+        form.add("退出", () -> {
+        });
+        form.show(player);
+    }
+
+    private static void selectRule(Player player, TabletopGameBoard board, int rule) {
+        if (!checkMenu(player, board)) {
+            return;
+        }
+        board.setRule(rule);
+        board.reopenMenu(player);
+    }
+
+    /**
+     * Swap2 开局选择表单：假后手（阶段 2）或假先手（阶段 4）做出选择。
+     * 误触关闭后不自动重开，玩家可再次点击棋盘重新打开（见 {@code TabletopGameManager#useBoard}）。
+     */
+    public static void openSwapDecision(Player player, TabletopGameBoard board) {
+        int phase = board.getSwapPhase();
+        if (phase != 2 && phase != 4) {
+            return;
+        }
+        Simple form = new Simple("五子棋 · Swap2 开局 [Beta]", board.swapPrompt());
+        if (phase == 2) {
+            form.add("继续执白", () -> applySwap(board, board::swapTakeWhite));
+            form.add("交换执黑", () -> applySwap(board, board::swapTakeBlack));
+            form.add("落下 2 子", () -> applySwap(board, board::swapPlaceTwo));
+        } else {
+            form.add("继续执黑", () -> applySwap(board, board::swapKeepBlack));
+            form.add("交换执白", () -> applySwap(board, board::swapTakeWhiteFinal));
+        }
+        form.show(player);
+    }
+
+    private static void applySwap(TabletopGameBoard board, BooleanSupplier action) {
+        board.later(action::getAsBoolean);
+    }
+
+    /** 棋色选择按钮：选色后即入座，后续由「单人对战」或对手加入推进。 */
+    private static void addColorButtons(Simple form, Player player, TabletopGameBoard board) {
+        form.add("选择执白方", () -> {
+            if (checkMenu(player, board)) {
+                board.join(player, TabletopGameBoard.WHITE);
+            }
+        });
+        form.add("选择执黑方", () -> {
+            if (checkMenu(player, board)) {
+                board.join(player, TabletopGameBoard.BLACK);
+            }
+        });
+    }
+
+    /**
+     * 单人对战按钮。点击后玩家立即入座（占一个座位），未选色时暂存机器人等级，
+     * 并立即重新弹出菜单，形成「选对手 → 选棋色 → 开始棋局」的连续表单。
+     * <p>
+     * 入座后该棋盘对其他人即为满员，不再受 0 人菜单的占用锁与超时兜底影响。
+     */
+    private static void addAiButtons(Simple form, Player player, TabletopGameBoard board) {
+        for (int i = 0; i < AI_LEVELS.length; i++) {
+            final int level = i + 1;
+            form.add("单人对战（" + AI_LEVELS[i] + "）", () -> {
+                if (!checkMenu(player, board)) {
+                    return;
+                }
+                if (board.chooseAi(player, level)) {
+                    board.reopenMenu(player);
+                }
+            });
+        }
+    }
+
+    /** 下注金额输入表单；直接关闭时回到开始棋局菜单。 */
+    private static void openBetInput(Player player, TabletopGameBoard board) {
+        double min = board.getMinBet();
+        double max = board.getMaxBet();
+        new Custom("五子棋 · 赌博模式 [Beta]")
+                .label("请输入本次下注金额（" + money(min) + " ~ " + money(max) + "，最多两位小数）\n"
+                        + "确认后双方各扣除该金额；获胜方获得奖池扣除官方抽水后的奖金，平局则全额退还。")
+                .input("下注金额", money(min))
+                .submit("确认下注")
+                .onSubmit(text -> board.later(() -> handleBet(player, board, text)))
+                .onClose(() -> board.reopenMenu(player))
+                .show(player);
+    }
+
+    /** 校验下注金额并尝试开局。 */
+    private static void handleBet(Player player, TabletopGameBoard board, String text) {
+        Double bet = parseAmount(text);
+        if (bet == null) {
+            promptRetry(player, board, "§c金额格式不正确：只能输入数字，且最多保留两位小数。");
+            return;
+        }
+        double min = board.getMinBet();
+        double max = board.getMaxBet();
+        if (bet < min || bet > max) {
+            promptRetry(player, board, "§c金额需在 " + money(min) + " ~ " + money(max) + " 之间。");
+            return;
+        }
+        // 先检测双方余额是否足够，不足时指明是哪一方
+        for (UUID id : board.getSeats()) {
+            if (EconomyHook.balance(id) < bet) {
+                promptInsufficient(player, board, "§c" + board.seatName(id) + " 余额不足");
+                return;
+            }
+        }
+        String error = board.startGambling(bet);
+        if (error != null) {
+            promptRetry(player, board, "§c" + error);
+        }
+    }
+
+    /** 输入不合法提示：点击返回重新输入；直接关闭则回到开始棋局菜单。 */
+    private static void promptRetry(Player player, TabletopGameBoard board, String message) {
+        Simple prompt = new Simple("五子棋 · 提示 [Beta]", message);
+        prompt.add("返回重新输入", () -> board.later(() -> openBetInput(player, board)));
+        prompt.onClose(() -> board.reopenMenu(player));
+        prompt.show(player);
+    }
+
+    /** 余额不足提示：可返回输入金额，或退出表单。 */
+    private static void promptInsufficient(Player player, TabletopGameBoard board, String message) {
+        Simple prompt = new Simple("五子棋 · 提示 [Beta]", message);
+        prompt.add("返回输入金额", () -> board.later(() -> openBetInput(player, board)));
+        prompt.add("退出", () -> {
+        });
+        prompt.onClose(() -> board.reopenMenu(player));
+        prompt.show(player);
+    }
+
+    /** 解析下注金额：仅接受正数且最多两位小数。 */
+    private static Double parseAmount(String text) {
+        if (text == null || !text.matches("\\d+(\\.\\d{1,2})?")) {
+            return null;
+        }
+        try {
+            double value = Double.parseDouble(text);
+            return value > 0 ? value : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static String money(double value) {
+        return String.format(Locale.ROOT, "%.2f", value);
+    }
+}

@@ -1,9 +1,9 @@
 {
-  "resource_pack_name": "Gomoku",
+  "resource_pack_name": "TabletopGame",
   "texture_name": "atlas.items",
   "texture_data": {
-    "gomoku_board_icon": {
-      "textures": "textures/gomoku/board_icon"
+    "tabletopgame_board_icon": {
+      "textures": "textures/tabletopgame/board_icon"
     }
   }
 }

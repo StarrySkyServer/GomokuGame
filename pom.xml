@@ -4,23 +4,26 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>top.gomoku</groupId>
-    <artifactId>Gomoku</artifactId>
-    <version>1.0.0</version>
+    <groupId>top.tabletopgame</groupId>
+    <artifactId>TabletopGame</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <okaeri.version>5.0.2</okaeri.version>
-        <snakeyaml.version>2.5</snakeyaml.version>
+        <okaeri.version>6.1.0-beta.1</okaeri.version>
     </properties>
 
     <repositories>
         <repository>
             <id>repo-lanink-cn</id>
             <url>https://repo.lanink.cn/repository/maven-public/</url>
+        </repository>
+        <repository>
+            <id>okaeri-releases</id>
+            <url>https://repo.okaeri.cloud/releases</url>
         </repository>
     </repositories>
 
@@ -32,68 +35,20 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- 配置文件库：随插件打包（内置依赖）。Nukkit-MOT 自带 snakeyaml 但不含 okaeri，
-             因此两者都做 shade + 重定位，避免与其他插件/服务端的同名类冲突。 -->
+        <!-- 配置库：Nukkit-MOT 已内置 okaeri-configs 6.1.0-beta.1（含 snakeyaml），
+             这里只按 provided 编译，运行期由服务端提供，不再 shade 打包。 -->
         <dependency>
             <groupId>eu.okaeri</groupId>
             <artifactId>okaeri-configs-yaml-snakeyaml</artifactId>
             <version>${okaeri.version}</version>
+            <scope>provided</scope>
         </dependency>
-        <!-- 显式锁定 snakeyaml 版本：否则会被 Nukkit 的传递依赖顶替，版本随服务端更新漂移 -->
-        <dependency>
-            <groupId>org.yaml</groupId>
-            <artifactId>snakeyaml</artifactId>
-            <version>${snakeyaml.version}</version>
-        </dependency>
+
+        <!-- 经济插件（EconomyAPI）通过反射接入（见 top.tabletopgame.economy.EconomyHook），
+             不产生编译期依赖，运行期缺失也不影响插件加载。 -->
     </dependencies>
 
     <build>
         <finalName>${project.artifactId}-${project.version}</finalName>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.5.0</version>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <createDependencyReducedPom>false</createDependencyReducedPom>
-                            <artifactSet>
-                                <includes>
-                                    <include>eu.okaeri:okaeri-configs-core</include>
-                                    <include>eu.okaeri:okaeri-configs-yaml-snakeyaml</include>
-                                    <include>org.yaml:snakeyaml</include>
-                                </includes>
-                            </artifactSet>
-                            <relocations>
-                                <relocation>
-                                    <pattern>eu.okaeri</pattern>
-                                    <shadedPattern>top.gomoku.libs.okaeri</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>org.yaml.snakeyaml</pattern>
-                                    <shadedPattern>top.gomoku.libs.snakeyaml</shadedPattern>
-                                </relocation>
-                            </relocations>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                        <exclude>module-info.class</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
     </build>
 </project>

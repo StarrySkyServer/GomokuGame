@@ -1,18 +1,20 @@
-name: Gomoku
-main: top.gomoku.GomokuPlugin
-version: "1.0.0"
+name: TabletopGame
+main: top.tabletopgame.TabletopGamePlugin
+version: "1.0.0-SNAPSHOT"
 api: ["1.0.0"]
 author: MysteriousHim
 description: 五子棋（实体棋子 + 自定义方块棋盘）
 load: STARTUP
+# 强依赖经济插件：缺失时 Nukkit 直接拒绝加载本插件（不会以「赌博不可用」的降级形态运行）
+depend: [EconomyAPI]
 
 commands:
-  gomoku:
+  tabletopgame:
     description: 获取五子棋棋盘物品 / 重载配置
-    usage: "/gomoku [4x4|reload]"
-    permission: gomoku.command
+    usage: "/tabletopgame [4x4|reload]"
+    permission: tabletopgame.command
 
 permissions:
-  gomoku.command:
-    description: 允许使用 /gomoku 命令（发放棋盘 / 重载配置）
+  tabletopgame.command:
+    description: 允许使用 /tabletopgame 命令（发放棋盘 / 重载配置）
     default: op

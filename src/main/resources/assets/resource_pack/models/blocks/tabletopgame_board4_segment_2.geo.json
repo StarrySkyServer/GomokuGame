@@ -1,0 +1,35 @@
+{
+  "format_version": "1.12.0",
+  "minecraft:geometry": [
+    {
+      "description": {
+        "identifier": "geometry.tabletopgame.board4_segment_2",
+        "texture_width": 256,
+        "texture_height": 256,
+        "visible_bounds_width": 2,
+        "visible_bounds_height": 0.6,
+        "visible_bounds_offset": [0, 0.2, 0]
+      },
+      "bones": [
+        {
+          "name": "board",
+          "pivot": [0, 0, 0],
+          "cubes": [
+            {
+              "origin": [-8, 0, -8],
+              "size": [16, 1.5, 16],
+              "uv": {
+                "north": {"uv": [0, 0], "uv_size": [256, 19], "material_instance": "wood"},
+                "east": {"uv": [0, 0], "uv_size": [256, 19], "material_instance": "wood"},
+                "south": {"uv": [0, 0], "uv_size": [256, 19], "material_instance": "wood"},
+                "west": {"uv": [0, 0], "uv_size": [256, 19], "material_instance": "wood"},
+                "up": {"uv": [128, 0], "uv_size": [64, 64]},
+                "down": {"uv": [0, 0], "uv_size": [256, 256], "material_instance": "wood"}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,14 +1,14 @@
 {
-  "resource_pack_name": "Gomoku",
+  "resource_pack_name": "TabletopGame",
   "texture_name": "atlas.terrain",
   "padding": 8,
   "num_mip_levels": 4,
   "texture_data": {
-    "gomoku_board_top": {
-      "textures": "textures/gomoku/board_surface"
+    "tabletopgame_board_top": {
+      "textures": "textures/tabletopgame/board_surface"
     },
-    "gomoku_board_side": {
-      "textures": "textures/gomoku/board_frame"
+    "tabletopgame_board_side": {
+      "textures": "textures/tabletopgame/board_frame"
     }
   }
 }
