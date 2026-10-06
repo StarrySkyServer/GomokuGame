@@ -13,7 +13,7 @@ Nukkit-MOT 服务端的五子棋插件：自定义方块棋盘 + 实体棋子，
 
 ## 安装
 
-1. 从 Release 下载 `Gomoku-1.0.0.jar`
+1. 下载 `Gomoku-1.0.0.jar`
 2. 放入服务器 `plugins/` 目录
 3. 重启服务器
 
