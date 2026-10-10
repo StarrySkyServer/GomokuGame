@@ -1,9 +1,1 @@
-{
-  "resource_pack_name": "TabletopGame",
-  "texture_name": "atlas.items",
-  "texture_data": {
-    "tabletopgame_board_icon": {
-      "textures": "textures/tabletopgame/board_icon"
-    }
-  }
-}
+{"resource_pack_name":"TabletopGame","texture_name":"atlas.items","texture_data":{"tabletopgame_board_icon":{"textures":"textures/tabletopgame/board_icon"},"tabletopgame_xiangqi_board_icon":{"textures":"textures/tabletopgame/xiangqi_board_icon"},"tabletopgame_othello_board_icon":{"textures":"textures/tabletopgame/othello_board_icon"}}}

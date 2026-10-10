@@ -1,17 +1,1 @@
-{
-    "format_version": 2,
-    "header": {
-        "name": "TabletopGame Board Resource Pack",
-        "description": "五子棋棋盘与棋子资源（Nukkit-MOT 服务端内置）",
-        "uuid": "825cc2a1-b604-4fd5-b9d0-f00046ac9e23",
-        "version": [1, 7, 0],
-        "min_engine_version": [1, 17, 0]
-    },
-    "modules": [
-        {
-            "type": "resources",
-            "uuid": "51e8973f-e263-443d-ad64-b902a3da8c9d",
-            "version": [1, 7, 0]
-        }
-    ]
-}
+{"format_version":2,"header":{"name":"TabletopGame Board Resource Pack","description":"\u4e94\u5b50\u68cb\u68cb\u76d8\u4e0e\u68cb\u5b50\u8d44\u6e90\uff08Nukkit-MOT \u670d\u52a1\u7aef\u5185\u7f6e\uff09","uuid":"825cc2a1-b604-4fd5-b9d0-f00046ac9e23","version":[1,21,12],"min_engine_version":[1,17,0]},"modules":[{"type":"resources","uuid":"51e8973f-e263-443d-ad64-b902a3da8c9d","version":[1,21,12]}]}

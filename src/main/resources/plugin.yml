@@ -10,8 +10,8 @@ depend: [EconomyAPI]
 
 commands:
   tabletopgame:
-    description: 获取五子棋棋盘物品 / 重载配置
-    usage: "/tabletopgame [4x4|reload]"
+    description: 获取五子棋/中国象棋棋盘物品 / 重载配置
+    usage: "/tabletopgame [3x3|xiangqi|reload]"
     permission: tabletopgame.command
 
 permissions:
