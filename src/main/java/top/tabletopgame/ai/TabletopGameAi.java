@@ -59,8 +59,8 @@ public final class TabletopGameAi {
     private static final int MEDIUM_BEAM = 12;
 
     private static final int HARD_MAX_DEPTH = 5;
-    /** 大师档单次思考的时间上限（0.5 秒），超时后返回上一层已完成搜索的最优解。 */
-    private static final long HARD_TIME_LIMIT_NS = 500_000_000L;
+    /** 大师档单次思考的时间上限（1 秒），超时后返回上一层已完成搜索的最优解。 */
+    private static final long HARD_TIME_LIMIT_NS = 1_000_000_000L;
     /**
      * 大师档根节点的随机扰动幅度。
      * <p>

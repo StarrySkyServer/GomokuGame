@@ -22,11 +22,13 @@ import eu.okaeri.configs.ConfigManager;
 import eu.okaeri.configs.yaml.snakeyaml.YamlSnakeYamlConfigurer;
 import top.tabletopgame.ai.TabletopGameAi;
 import top.tabletopgame.board.BaseTabletopGameBoardBlock;
-import top.tabletopgame.board.TabletopGameBoard4x4Block;
+import top.tabletopgame.board.OthelloBoardBlock;
+import top.tabletopgame.board.TabletopGameBoard3x3Block;
 import top.tabletopgame.board.TabletopGameBoardBlock;
+import top.tabletopgame.board.XiangqiBoardBlock;
 import top.tabletopgame.config.TabletopGameConfig;
 import top.tabletopgame.entity.TabletopGameStoneEntity;
-import top.tabletopgame.item.TabletopGameBoard4x4Item;
+import top.tabletopgame.item.TabletopGameBoard3x3Item;
 import top.tabletopgame.item.TabletopGameBoardItem;
 import top.tabletopgame.ui.TabletopGameMenu;
 
@@ -184,29 +186,6 @@ public class TabletopGameManager implements Listener {
         }, true);
     }
 
-    /**
-     * 静默发放战胜机器人的奖励：按等级读取配置逐项加入背包，放不下的掉落在玩家脚下。
-     * <p>
-     * 不发送任何提示（玩家要求奖励不播报）。本方法在主线程调用（落子流程内）。
-     */
-    public void giveAiReward(Player player, int level) {
-        for (Map<String, Integer> entry : config.getRewards().forLevel(level)) {
-            Integer id = entry.get("id");
-            Integer count = entry.get("count");
-            if (id == null || count == null || count <= 0) {
-                continue;
-            }
-            Item reward = Item.get(id, 0, count);
-            if (reward == null || reward.getId() == 0) {
-                plugin.getLogger().warning("奖励配置中的物品 ID 无效：" + id);
-                continue;
-            }
-            for (Item overflow : player.getInventory().addItem(reward)) {
-                player.getLevel().dropItem(player, overflow);
-            }
-        }
-    }
-
     /** 标记棋盘状态已变更，等待下一次 tick 统一保存。 */
     public void markDirty() {
         this.dirty = true;
@@ -261,13 +240,14 @@ public class TabletopGameManager implements Listener {
 
         // 右键：PC 鼠标右键，或触屏对可交互方块的使用。用于放置棋盘或打开棋盘菜单。
         if (action == PlayerInteractEvent.Action.RIGHT_CLICK_BLOCK) {
-            if (item instanceof TabletopGameBoardItem || item instanceof TabletopGameBoard4x4Item) {
+            if (item instanceof TabletopGameBoardItem || item instanceof TabletopGameBoard3x3Item) {
                 // 放置棋盘会真正改动世界，仍遵守服务端取消（如出生点保护）
                 if (event.isCancelled() || !canPlace(player)) {
                     event.setCancelled(true);
                     return;
                 }
-                tryPlace(player, event, clicked, item instanceof TabletopGameBoard4x4Item ? 4 : 2);
+                int size = item instanceof TabletopGameBoard3x3Item ? 3 : 2;
+                tryPlace(player, event, clicked, size);
                 return;
             }
             if (clicked instanceof BaseTabletopGameBoardBlock) {
@@ -335,6 +315,13 @@ public class TabletopGameManager implements Listener {
         int qx = TabletopGameBoard.axisQX(rotation);
         int qz = TabletopGameBoard.axisQZ(rotation);
 
+        // 3x3 以点击方块为中心：区域原点回退半格（P+Q），使区域中心格 (1,1) 正好落在放置点上，
+        // 其余尺寸仍以放置点为原点沿 P/Q 正向延伸。
+        if (size == 3) {
+            bx -= px + qx;
+            bz -= pz + qz;
+        }
+
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
                 Block b = level.getBlock(bx + i * px + j * qx, by, bz + i * pz + j * qz);
@@ -378,7 +365,12 @@ public class TabletopGameManager implements Listener {
                 player.getInventory().setItemInHand(hand);
             }
         }
-        player.sendTip("§a已放置" + (size >= 4 ? "4x4 " : "") + "五子棋棋盘。右键棋盘可打开菜单。");
+        player.sendTip("§a已放置" + sizeLabel(size) + "五子棋棋盘。右键棋盘可打开菜单。");
+    }
+
+    /** 棋盘尺寸标签：标准 2x2 不带前缀，3x3 以「3x3 」区分。 */
+    private static String sizeLabel(int size) {
+        return size == 3 ? "3x3 " : "";
     }
 
     /** 按玩家朝向取最近的 90° 朝向：0=南、1=西、2=北、3=东。 */
@@ -394,7 +386,8 @@ public class TabletopGameManager implements Listener {
         int qz = TabletopGameBoard.axisQZ(rotation);
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
-                BaseTabletopGameBoardBlock block = size >= 4 ? new TabletopGameBoard4x4Block() : new TabletopGameBoardBlock();
+                BaseTabletopGameBoardBlock block = size == 3 ? new TabletopGameBoard3x3Block()
+                        : new TabletopGameBoardBlock();
                 // position = segment * 4 + rotation：segment 选择贴图象限，rotation 让方块模型跟随棋盘朝向
                 block.setPosition((i + j * size) * 4 + rotation);
                 level.setBlock(new Vector3(bx + i * px + j * qx, by, bz + i * pz + j * qz), block, true);
@@ -483,6 +476,50 @@ public class TabletopGameManager implements Listener {
         runLater(() -> TabletopGameMenu.reopen(player, board));
     }
 
+    /**
+     * 座位变化（有人加入/退出）后刷新所有在座玩家的棋盘菜单。
+     * <p>
+     * 表单弹出后无法从服务端直接替换——{@link Player#showFormWindow} 在 {@code formOpen} 为 true 时
+     * 会直接返回 -1 且不发送任何数据，客户端上仍是旧表单。因此刷新分两步：
+     * <ol>
+     *     <li>{@link TabletopGameMenu#closeCurrentForm} 让客户端真正关闭当前表单（同时清掉服务端登记）</li>
+     *     <li>延后一 tick 重新弹出对应状态的表单，借客户端「新表单顶掉旧表单」完成自动切换</li>
+     * </ol>
+     * 关闭表单不会触发旧表单的关闭回调，因此不会误触发「释放菜单占用」之类的副作用。
+     * <p>
+     * 效果：有人加入时，等待中的一方自动从「1 人等待」换成「开始棋局 / 等待对方开始」；
+     * 有人退出时，另一方自动换回「1 人可开局」界面，无需手动点击棋盘。
+     */
+    public void refreshSeatMenus(TabletopGameBoard board) {
+        if (board.isRunning()) {
+            return;
+        }
+        for (UUID id : new ArrayList<>(board.getSeats())) {
+            Player p = Server.getInstance().getPlayer(id).orElse(null);
+            if (p == null) {
+                continue;
+            }
+            TabletopGameMenu.closeCurrentForm(p);
+            reopenMenu(p, board);
+        }
+    }
+
+    /**
+     * 关闭所有在座玩家的棋盘表单。
+     * <p>
+     * 开局时使用：对局开始后「等待对方开始 / 开始棋局」的表单已经没有意义，
+     * 而 Nukkit 在客户端仍开着表单时不会再发送新表单，不主动关掉的话，
+     * 后入座的一方会一直对着「等待对方开始棋局」的界面直到手动关闭。
+     */
+    public void closeSeatMenus(TabletopGameBoard board) {
+        for (UUID id : new ArrayList<>(board.getSeats())) {
+            Player p = Server.getInstance().getPlayer(id).orElse(null);
+            if (p != null) {
+                TabletopGameMenu.closeCurrentForm(p);
+            }
+        }
+    }
+
     /** 延后一 tick 在主线程执行，避免在表单回调中直接弹窗造成客户端窗口冲突。 */
     public void runLater(Runnable action) {
         Server.getInstance().getScheduler().scheduleDelayedTask(plugin, action, 1);
@@ -499,6 +536,15 @@ public class TabletopGameManager implements Listener {
         if (!(block instanceof BaseTabletopGameBoardBlock)) {
             return;
         }
+        // 象棋棋盘由 XiangqiManager 独立处理（整体收回）：这里提前返回，
+        // 避免抢先取消事件、播两次音效，以及两个监听器 ignoreCancelled 造成的互相跳过
+        if (block instanceof XiangqiBoardBlock) {
+            return;
+        }
+        // 黑白棋棋盘同理，由 OthelloManager 独立处理
+        if (block instanceof OthelloBoardBlock) {
+            return;
+        }
         event.setCancelled(true);
         // 破坏事件被取消，服务端不会广播破坏特效，这里补上橡木板的破坏音效
         block.getLevel().addSound(
@@ -513,7 +559,7 @@ public class TabletopGameManager implements Listener {
         Level level = block.getLevel();
         Vector3 dropAt = new Vector3(block.getFloorX() + 0.5, block.getFloorY() + 0.25, block.getFloorZ() + 0.5);
         boolean drop = !player.isCreative();
-        boolean large = board.getBoardSize() >= 4;
+        int boardSize = board.getBoardSize();
         Server.getInstance().getScheduler().scheduleDelayedTask(plugin, () -> {
             if (boards.remove(board.getKey()) == null) {
                 return;
@@ -523,7 +569,9 @@ public class TabletopGameManager implements Listener {
             board.remove();
             markDirty();
             if (drop) {
-                level.dropItem(dropAt, large ? new TabletopGameBoard4x4Item() : new TabletopGameBoardItem());
+                Item dropItem = boardSize == 3 ? new TabletopGameBoard3x3Item()
+                        : new TabletopGameBoardItem();
+                level.dropItem(dropAt, dropItem);
             }
         }, 1);
     }
@@ -899,6 +947,12 @@ public class TabletopGameManager implements Listener {
         Level level = Server.getInstance().getLevelByName(data.level);
         if (level == null) {
             plugin.getLogger().warning("棋盘所在世界未加载，跳过：" + data.level);
+            return;
+        }
+        // 4x4 棋盘已下线：旧存档里残留的该尺寸棋盘直接跳过，避免恢复出无方块可用的空棋盘
+        if (data.boardSize != 2 && data.boardSize != 3) {
+            plugin.getLogger().warning("跳过不再支持的棋盘尺寸 " + data.boardSize + "：" + data.level
+                    + " (" + data.x + ", " + data.y + ", " + data.z + ")");
             return;
         }
         TabletopGameBoard board = new TabletopGameBoard(this, level, data.x, data.y, data.z, data.boardSize, data.rotation);

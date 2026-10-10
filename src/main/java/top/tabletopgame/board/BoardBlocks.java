@@ -15,7 +15,7 @@ import cn.nukkit.network.protocol.types.inventory.creative.CreativeItemCategory;
 /**
  * 棋盘方块注册辅助。
  * <p>
- * 2x2 与 4x4 两种棋盘共用同一套客户端定义：顶面用 {@code tabletopgame_board_top}、侧面用
+ * 2x2 / 3x3 两种棋盘共用同一套客户端定义：顶面用 {@code tabletopgame_board_top}、侧面用
  * {@code tabletopgame_board_side}，并通过 {@code tabletopgame:position} 属性在 permutation 中切换几何模型。
  * 差异只有几何模型数量与 position 的取值范围，因此抽出此方法复用。
  */
@@ -34,9 +34,20 @@ final class BoardBlocks {
      */
     static void register(String identifier, IntBlockProperty position, BlockProperties properties,
                          String[] geometries, String name, BlockContainerFactory factory) {
+        register(identifier, position, properties, geometries, name, "tabletopgame_board_top", factory);
+    }
+
+    /**
+     * 同 {@link #register(String, IntBlockProperty, BlockProperties, String[], String, BlockContainerFactory)}，
+     * 但可指定顶面贴图名（象棋棋盘用 {@code tabletopgame_xiangqi_board_top}，侧面/底面仍共用五子棋的边框贴图）。
+     *
+     * @param topTexture 顶面贴图名（须已在 terrain_texture.json 中登记）
+     */
+    static void register(String identifier, IntBlockProperty position, BlockProperties properties,
+                         String[] geometries, String name, String topTexture, BlockContainerFactory factory) {
         Materials materials = Materials.builder();
-        materials.any(Materials.RenderMethod.OPAQUE, false, true, "tabletopgame_board_top");
-        materials.up(Materials.RenderMethod.OPAQUE, false, true, "tabletopgame_board_top");
+        materials.any(Materials.RenderMethod.OPAQUE, false, true, topTexture);
+        materials.up(Materials.RenderMethod.OPAQUE, false, true, topTexture);
         // 侧面 / 底面使用边框贴图：几何模型里以 material_instance "wood" 引用
         materials.process("wood", false, true, "opaque", "tabletopgame_board_side");
 
@@ -47,7 +58,11 @@ final class BoardBlocks {
                 .breakTime(2.0)
                 .blockTags("wood", "minecraft:is_axe_item_destructible")
                 .collisionBox(new Vector3f(-8f, 0f, -8f), new Vector3f(16f, 2f, 16f))
-                .selectionBox(new Vector3f(-7.6f, 0.1f, -7.6f), new Vector3f(15.2f, 1.3f, 15.2f))
+                // 选轮箱必须整格宽（±8）：棋盘由 2x2（3x3 同理）多块拼成，
+                // 若像原来那样四周内缩 0.4 模型单位，相邻两块之间会留下约 0.05 格的窄缝，
+                // 准星落在这条缝上时客户端判定没有方块命中，表现为「选不到」。
+                // 高度取 2（= 0.125 格）与碰撞箱一致，贴合棋盘模型。
+                .selectionBox(new Vector3f(-8f, 0f, -8f), new Vector3f(16f, 2f, 16f))
                 .creativeCategory(CreativeItemCategory.CONSTRUCTION)
                 .registerCreativeItem(false)
                 .geometry(new Geometry(geometries[0]))

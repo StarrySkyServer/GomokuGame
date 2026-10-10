@@ -2,8 +2,6 @@ package top.tabletopgame.entity;
 
 import cn.nukkit.Player;
 import cn.nukkit.entity.Entity;
-import cn.nukkit.entity.custom.CustomEntity;
-import cn.nukkit.entity.custom.EntityDefinition;
 import cn.nukkit.entity.data.Vector3fEntityData;
 import cn.nukkit.entity.data.property.EntityProperty;
 import cn.nukkit.entity.data.property.IntEntityProperty;
@@ -13,75 +11,55 @@ import cn.nukkit.nbt.tag.CompoundTag;
 import top.tabletopgame.game.TabletopGameBoard;
 
 /**
- * 棋子渲染实体，对应资源包中的 tabletopgame:stone。
+ * 五子棋棋子渲染实体的公共基类。
  * <p>
- * 棋盘状态通过实体属性 {@code tabletopgame:row_0 .. tabletopgame:row_14}（三进制编码）同步给客户端，
- * 客户端动画据此缩放对应骨骼来显示黑白棋子；{@code hover}/{@code last} 控制准星高亮与最后一手标记，
- * {@code size} 表示棋盘边长（2 = 标准 2x2，4 = 大号 4x4），客户端据此把整个网格放大到 1.6 / 3.2 倍。
+ * 采用「一个实体绘制整盘」：棋盘 225 个落点的棋子状态通过「按行三进制编码」同步给客户端。
+ * 每行 15 格，每格取值 0=空 / 1=黑 / 2=白，整行编码为 {@code Σ cell[c]*3^c}，最大
+ * {@code 3^15-1 = 14348906 < 2^24}，避免客户端浮点精度问题。15 个行属性 + 尺寸 = 16 个属性，
+ * 远低于基岩版「每个实体类型最多 32 个 Entity Property」的上限。
+ * <p>
+ * 黑白两方拆成两个实体类型（{@link TabletopGameStoneBlackEntity} / {@link TabletopGameStoneWhiteEntity}），
+ * 二者共用同一份 225 骨骼几何体 {@code geometry.tabletopgame.stone}，仅靠贴图与动画区分棋色：
+ * 黑实体的格子骨骼在「该格为黑」时缩放为 1，白实体则在「该格为白」时缩放为 1。
+ * 这样资源包几何体只需一份 225 骨骼（而非每格黑白各一根的 450 骨骼），体积减半。
+ * <p>
+ * 该实体只负责渲染：无碰撞、无阴影、不可攻击、不可被 /kill 清除，
+ * 收回棋盘的唯一途径是破坏棋盘方块（由 {@link TabletopGameBoard#remove()} 直接 close）。
  */
-public class TabletopGameStoneEntity extends Entity implements CustomEntity {
+public abstract class TabletopGameStoneEntity extends Entity {
 
-    public static final String IDENTIFIER = "tabletopgame:stone";
-
+    /** 棋盘边长（网格始终为 15x15）。 */
     public static final int SIZE = 15;
 
-    /** 一行 15 格三进制最大值：3^15 - 1 */
+    /** 单行三进制编码的最大值：{@code 3^15-1}。 */
     public static final int MAX_ROW_VALUE = 14348906;
 
-    public static final String P_HOVER = "tabletopgame:hover";
-    public static final String P_LAST = "tabletopgame:last";
+    /** 棋盘边长属性（2 = 标准，3 = 中号，4 = 大号）。 */
     public static final String P_SIZE = "tabletopgame:size";
 
-    public static final EntityDefinition DEF = EntityDefinition.builder()
-            .identifier(IDENTIFIER)
-            // 基岩版客户端会为实体绘制一块软边阴影，其大小取自实体“定义”里的碰撞箱，
-            // 与 metadata 的 DATA_BOUNDING_BOX_WIDTH/HEIGHT（只决定准星命中箱）无关，
-            // 所以此前把命中箱设到 0.001 也消不掉棋盘中央那块阴影。
-            // 自定义实体在 Nukkit 里无法直接声明碰撞箱，只能通过运行时标识符（bid）
-            // 继承一个不绘制阴影的原版实体：armor_stand 明确会禁用实体阴影，
-            // 且其行为对纯展示实体没有副作用（模型仍由资源包的 tabletopgame:stone 客户端定义渲染）。
-            .parentEntity("minecraft:armor_stand")
-            .spawnEgg(false)
-            .implementation(TabletopGameStoneEntity.class)
-            .build();
-
+    /** 行编码属性名：{@code tabletopgame:row_R}（R = 0..14）。 */
     public static String rowName(int row) {
         return "tabletopgame:row_" + row;
     }
 
-    /**
-     * 注册客户端侧实体属性定义。必须在任何实体生成前调用（插件 onLoad）。
-     */
-    public static void registerProperties() {
-        for (int row = 0; row < SIZE; row++) {
-            EntityProperty.register(IDENTIFIER, new IntEntityProperty(rowName(row), 0, MAX_ROW_VALUE, 0));
-        }
-        EntityProperty.register(IDENTIFIER, new IntEntityProperty(P_HOVER, 0, SIZE * SIZE, 0));
-        EntityProperty.register(IDENTIFIER, new IntEntityProperty(P_LAST, 0, SIZE * SIZE, 0));
-        EntityProperty.register(IDENTIFIER, new IntEntityProperty(P_SIZE, 0, 4, 2));
-    }
-
-    public TabletopGameStoneEntity(FullChunk chunk, CompoundTag nbt) {
+    protected TabletopGameStoneEntity(FullChunk chunk, CompoundTag nbt) {
         super(chunk, nbt);
     }
 
-    @Override
-    public EntityDefinition getEntityDefinition() {
-        return DEF;
-    }
-
-    @Override
-    public int getNetworkId() {
-        return DEF.getRuntimeId();
+    /**
+     * 注册共用的行编码属性与边长属性。必须在任何实体生成前调用（插件 onLoad）。
+     * 黑白两个实体类型各自调用一次，属性按 identifier 分组注册。
+     */
+    protected static void registerRowProperties(String identifier) {
+        for (int r = 0; r < SIZE; r++) {
+            EntityProperty.register(identifier,
+                    new IntEntityProperty(rowName(r), 0, MAX_ROW_VALUE, 0));
+        }
+        EntityProperty.register(identifier, new IntEntityProperty(P_SIZE, 0, 4, 2));
     }
 
     /**
-     * 该实体只负责渲染棋子，不参与碰撞与射线检测。
-     * <p>
-     * 这三个值会被 Nukkit 通过 {@code DATA_BOUNDING_BOX_WIDTH/HEIGHT} 同步给客户端，
-     * 决定客户端准星的实体命中箱。若沿用 2x2x0.2 会正好盖住棋盘顶面，导致点击棋盘
-     * 命中的是实体而非方块（右键弹不出菜单、左键无法破坏收回）。
-     * 设为极小值后射线会直接穿过实体命中棋盘方块。
+     * 命中箱设为极小值，避免遮挡棋盘方块点击（右键菜单、左键破坏都会穿过实体命中方块）。
      * 棋子模型的渲染由资源包几何体按实体坐标绘制，与命中箱大小无关。
      */
     @Override
@@ -123,6 +101,17 @@ public class TabletopGameStoneEntity extends Entity implements CustomEntity {
         return false;
     }
 
+    /** 棋子仅用于渲染，不参与破坏：攻击无效，收回只能靠破坏棋盘方块。 */
+    @Override
+    public boolean attack(EntityDamageEvent source) {
+        return false;
+    }
+
+    /** 禁止一切击杀途径（如 {@code /kill @e}）；正常收回走 {@code close()}，不经过此方法。 */
+    @Override
+    public void kill() {
+    }
+
     private TabletopGameBoard board;
 
     public void setBoard(TabletopGameBoard board) {
@@ -133,29 +122,11 @@ public class TabletopGameStoneEntity extends Entity implements CustomEntity {
         return board;
     }
 
-    /**
-     * 棋子实体仅用于渲染，不参与破坏与收回：攻击无效，收回棋盘只能靠破坏棋盘方块。
-     */
-    @Override
-    public boolean attack(EntityDamageEvent source) {
-        return false;
-    }
-
-    /**
-     * 禁止一切击杀途径，使 {@code /kill @e} 等指令无法清除该实体（类似箱子那样不可杀死）。
-     * <p>
-     * 棋子的唯一清除方式是破坏棋盘方块，届时由 {@code TabletopGameBoard.remove()}
-     * 直接调用 {@code close()}，不经过 {@code kill()}，所以此处留空不影响正常收回。
-     */
-    @Override
-    public void kill() {
-    }
-
     /** 批量提交标记：置位期间所有属性变更只改本地值，不发包。 */
     private boolean batching;
 
     /**
-     * 开始批量提交属性。棋盘有 15 个行属性，开局/清盘若逐条同步会连发 15 个元数据包，
+     * 开始批量提交属性。整盘刷新会同时改动 15 个行属性，若逐条同步会连发十几个元数据包，
      * 用 beginBatch/endBatch 包住后整批只发一个。
      */
     public void beginBatch() {
@@ -168,33 +139,25 @@ public class TabletopGameStoneEntity extends Entity implements CustomEntity {
         this.syncProperties();
     }
 
+    /**
+     * 写入某一行的三进制编码（{@code value = Σ cell[c]*3^c}，cell 取值 0/1/2）。
+     */
     public void setRow(int row, int value) {
         if (this.setIntEntityProperty(rowName(row), value)) {
             this.sync();
         }
     }
 
-    /** 设置棋盘边长（2 = 标准，4 = 大号），客户端据此缩放网格。 */
+    /** 设置棋盘边长（2 = 标准，3 = 中号，4 = 大号），客户端据此缩放整个网格。 */
     public void setBoardSize(int size) {
-        if (this.setIntEntityProperty(P_SIZE, size >= 4 ? 4 : 2)) {
-            this.sync();
-        }
-    }
-
-    public void setHover(int index) {
-        if (this.setIntEntityProperty(P_HOVER, index)) {
-            this.sync();
-        }
-    }
-
-    public void setLast(int index) {
-        if (this.setIntEntityProperty(P_LAST, index)) {
+        int value = size >= 4 ? 4 : size == 3 ? 3 : 2;
+        if (this.setIntEntityProperty(P_SIZE, value)) {
             this.sync();
         }
     }
 
     /** 单条属性变更后的同步；处于批量模式时跳过，由 endBatch 统一发包。 */
-    private void sync() {
+    protected void sync() {
         if (this.batching) {
             return;
         }

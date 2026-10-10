@@ -9,7 +9,8 @@ import cn.nukkit.math.Vector3;
 import top.tabletopgame.ai.TabletopGameAi;
 import top.tabletopgame.board.BaseTabletopGameBoardBlock;
 import top.tabletopgame.economy.EconomyHook;
-import top.tabletopgame.entity.TabletopGameStoneEntity;
+import top.tabletopgame.entity.TabletopGameStoneBlackEntity;
+import top.tabletopgame.entity.TabletopGameStoneWhiteEntity;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -43,7 +44,7 @@ public class TabletopGameBoard {
      * <p>
      * {@code AXIS_P*} 是棋盘本地 +X（列方向）在世界中的朝向，{@code AXIS_Q*} 是本地 +Z（行方向反向）在世界中的朝向；
      * 两者由放置时玩家视角决定：0=南（默认，未旋转）、1=西、2=北、3=东。
-     * 棋盘 2x2/4x4 的区域即从放置点沿玩家左手边（P）与正前方（Q）延伸。
+     * 棋盘 2x2/3x3 的区域即从放置点沿玩家左手边（P）与正前方（Q）延伸。
      */
     private static final int[] AXIS_PX = {1, 0, -1, 0};
     private static final int[] AXIS_PZ = {0, 1, 0, -1};
@@ -61,19 +62,24 @@ public class TabletopGameBoard {
 
     private final TabletopGameManager manager;
     private final Level level;
+
+    /** 落子音效名，定义在资源包 {@code sounds/sound_definitions.json}。 */
+    private static final String SND_PLACE = "tabletopgame.gomoku.place";
+
     private final int baseX;
     private final int baseY;
     private final int baseZ;
-    /** 棋盘边长（方块数）：2 = 标准 2x2 棋盘，4 = 大号 4x4 棋盘。网格始终为 15x15。 */
+    /** 棋盘边长（方块数）：2 = 标准 2x2 棋盘，3 = 中号 3x3 棋盘。网格始终为 15x15。 */
     private final int boardSize;
 
-    /** 棋盘朝向：0=南、1=西、2=北、3=东。决定 2x2/4x4 区域相对玩家视角的延伸方向。 */
+    /** 棋盘朝向：0=南、1=西、2=北、3=东。决定 2x2/3x3 区域相对玩家视角的延伸方向。 */
     private final int rotation;
 
     /** 棋盘中心（构造时算好并复用）。只读，调用方不得修改。 */
     private final Vector3 center;
 
-    private TabletopGameStoneEntity entity;
+    private TabletopGameStoneBlackEntity blackEntity;
+    private TabletopGameStoneWhiteEntity whiteEntity;
 
     /** 座位（按加入先后排序，index 0 为第一位加入者） */
     private final List<UUID> seats = new ArrayList<>(2);
@@ -147,7 +153,7 @@ public class TabletopGameBoard {
         this.baseX = baseX;
         this.baseY = baseY;
         this.baseZ = baseZ;
-        this.boardSize = boardSize >= 4 ? 4 : 2;
+        this.boardSize = boardSize >= 4 ? 4 : boardSize == 3 ? 3 : 2;
         this.rotation = normalizeRotation(rotation);
         // 棋盘区域由 base 沿本地两轴展开：方块 (i,j) 的几何中心 = base + i*P + j*Q + (0.5, 0.5)。
         // 对全部 i,j 取平均得区域中心 = base + 0.5 + (boardSize-1)/2 * (P + Q)。
@@ -161,7 +167,7 @@ public class TabletopGameBoard {
                 baseZ + 0.5 + half * (AXIS_PZ[this.rotation] + AXIS_QZ[this.rotation]));
     }
 
-    /** 棋盘边长（方块数）：2 或 4。 */
+    /** 棋盘边长（方块数）：2 / 3 / 4。 */
     public int getBoardSize() {
         return boardSize;
     }
@@ -222,7 +228,8 @@ public class TabletopGameBoard {
 
     /** 棋子实体是否缺失。区块卸载会关闭非玩家实体，需在玩家回到范围时重建。 */
     public boolean isEntityMissing() {
-        return entity == null || entity.isClosed();
+        return blackEntity == null || blackEntity.isClosed()
+                || whiteEntity == null || whiteEntity.isClosed();
     }
 
     /**
@@ -328,6 +335,11 @@ public class TabletopGameBoard {
     /** 本局是否已分出胜负或平局（用于隐藏「继承棋局」等按钮，避免重复获胜/重复领奖）。 */
     public boolean isFinished() {
         return !running && (winner != null || draw);
+    }
+
+    /** 棋盘上是否已有棋子（用于决定是否显示「继承棋局」：空盘无可继承）。 */
+    public boolean hasStones() {
+        return blackStones + whiteStones > 0;
     }
 
     /** 赌博模式是否已开启。 */
@@ -524,10 +536,10 @@ public class TabletopGameBoard {
     /** Swap2 开局选择表单的说明文案。 */
     public String swapPrompt() {
         if (swapPhase == 2) {
-            return "§7假先手已摆好 3 子（2 黑 1 白）。\n§7请选择：继续执白、交换执黑，或再落下 2 子。";
+            return "假先手已摆好 3 子（2 黑 1 白）。\n请选择…\n§e提示：可关闭界面查看棋盘，点击棋盘重新打开该界面。";
         }
         if (swapPhase == 4) {
-            return "§7假后手已落下 2 子（1 白 1 黑）。\n§7请选择：继续执黑，或交换执白。";
+            return "假后手已落下 2 子（1 白 1 黑）。\n请选择…\n§e提示：可关闭界面查看棋盘，点击棋盘重新打开该界面。";
         }
         return "";
     }
@@ -838,6 +850,10 @@ public class TabletopGameBoard {
      * 等玩家选色后再让机器人坐到对面。状态保存在棋盘上，因此中途关闭菜单再打开仍停留在下一步。
      * <p>
      * 玩家一旦点选「单人对战」即视为入座，对其他人而言棋盘已满员。
+     * <p>
+     * 只有「自己是唯一座位」时才允许拉机器人入座：已入座者若旁边还有其他座位，
+     * 说明对手已就位，此时机器人会挤进同一棋色，导致机器人与真人玩家能同时操作一方
+     * （入座后未刷新的过期表单点击该按钮就会走到这里）。
      *
      * @return 棋盘状态是否发生变化（用于决定是否重新弹出菜单）
      */
@@ -846,8 +862,9 @@ public class TabletopGameBoard {
             return false;
         }
         UUID id = player.getUniqueId();
-        if (seats.size() >= 2 && !seats.contains(id)) {
-            tipTo(id, "§c座位已满。");
+        boolean seated = seats.contains(id);
+        if (seated ? seats.size() > 1 : seats.size() >= 2) {
+            tipTo(id, "§c座位已满，无法开始单人对战。");
             return false;
         }
         int myColor = seatColor(id);
@@ -905,6 +922,25 @@ public class TabletopGameBoard {
         // 人机对战不适用赌博模式
         gamblingEnabled = false;
         markDirty();
+    }
+
+    /**
+     * 退出单人对战：只移除机器人座位，玩家保持在座（棋色不变），回到「1 人入座」状态，
+     * 之后可重新选择其他等级的机器人，或退出棋局。仅未开局的人机对局有效。
+     *
+     * @return 是否成功移除了机器人座位
+     */
+    public boolean exitAiBattle() {
+        if (running || !isAiGame()) {
+            return false;
+        }
+        seats.remove(AI_ID);
+        seatColors.remove(AI_ID);
+        aiColor = 0;
+        aiLevel = 0;
+        aiThinking = false;
+        markDirty();
+        return true;
     }
 
     /** 请求重新弹出本棋盘的菜单，供人机对战的分步表单使用。 */
@@ -998,6 +1034,9 @@ public class TabletopGameBoard {
         releaseMenu(id);
         markDirty();
         tipTo(id, "§a你已加入对局（" + colorName(color) + "）。");
+        // 座位变化后统一刷新所有座位玩家的表单：入座者直接跳转到等待界面，
+        // 已在座的一方也会自动换成新状态，无需手动点击棋盘
+        manager.refreshSeatMenus(this);
         return true;
     }
 
@@ -1044,6 +1083,10 @@ public class TabletopGameBoard {
                 abort("有玩家退出，本局结束");
             }
         }
+        // 座位变化后刷新仍在座玩家的表单：等待开局的一方会自动从「等待」回到「可开局」界面
+        if (!seats.isEmpty()) {
+            manager.refreshSeatMenus(this);
+        }
         return true;
     }
 
@@ -1059,6 +1102,8 @@ public class TabletopGameBoard {
         }
         clearGrid();
         running = true;
+        // 开局即关闭双方仍开着的表单：后入座的一方不再停留在「等待对方开始棋局」界面
+        manager.closeSeatMenus(this);
         winner = null;
         draw = false;
         aiThinking = false;
@@ -1091,6 +1136,8 @@ public class TabletopGameBoard {
             return;
         }
         running = true;
+        // 开局即关闭双方仍开着的表单：后入座的一方不再停留在「等待对方开始棋局」界面
+        manager.closeSeatMenus(this);
         winner = null;
         draw = false;
         // 继承棋局视为正常一人一手，不再进入 Swap2 开局流程
@@ -1119,15 +1166,13 @@ public class TabletopGameBoard {
         }
         blackStones = 0;
         whiteStones = 0;
-        if (entity == null || entity.isClosed()) {
+        if (isEntityMissing()) {
             return;
         }
-        // 15 行属性合并成一次同步，避免清盘连发 15 个元数据包
-        entity.beginBatch();
-        for (int r = 0; r < SIZE; r++) {
-            pushRow(r);
-        }
-        entity.endBatch();
+        // 15 个行属性合并成一次同步，避免清盘连发十几个元数据包
+        beginBatch();
+        pushRows();
+        endBatch();
     }
 
     /**
@@ -1172,7 +1217,7 @@ public class TabletopGameBoard {
         return row * SIZE + col + 1;
     }
 
-    /** 15 条网格线跨越的长度（方块数）：标准棋盘 1.75，大棋盘 3.5。 */
+    /** 15 条网格线跨越的长度（方块数）：标准棋盘 1.75，中号 2.625，大棋盘 3.5。 */
     private double gridSpan() {
         return boardSize * 0.875;
     }
@@ -1269,20 +1314,21 @@ public class TabletopGameBoard {
             whiteStones++;
         }
         markDirty();
+        playBoardSound(SND_PLACE);
 
         boolean win = checkWin(row, col, color);
         boolean full = !win && isFull();
 
-        // 本步的属性变更（行、最后一手、清除高亮）合并成一次同步，整步只发一个元数据包
-        boolean hasEntity = entity != null && !entity.isClosed();
+        // 本步的属性变更（行编码、最后一手、清除高亮）合并成一次同步，整步只发一个元数据包
+        boolean hasEntity = !isEntityMissing();
         if (hasEntity) {
-            entity.beginBatch();
+            beginBatch();
         }
-        pushRow(row);
+        pushRows();
         setLast(row * SIZE + col + 1);
         setHover(0);
         if (hasEntity) {
-            entity.endBatch();
+            endBatch();
         }
 
         if (win) {
@@ -1362,11 +1408,10 @@ public class TabletopGameBoard {
     }
 
     /**
-     * 胜负播报与奖励结算。
+     * 胜负播报。
      * <p>
      * 玩家对局与「战胜大师级机器人」全服播报：同时发聊天栏广播与全服提示条（两种提示）；
      * 战胜入门/进阶机器人、或机器人获胜，只给当事玩家发提示条。
-     * 玩家战胜机器人时静默发放对应等级的奖励，不额外播报。
      */
     private void announceWin(int color, String actorName) {
         String msg = "§6" + actorName + " 在与 " + opponentNameOf(color) + " 的五子棋对战中获胜！";
@@ -1375,12 +1420,6 @@ public class TabletopGameBoard {
             return;
         }
         boolean playerWon = color != aiColor;
-        if (playerWon && winner != null) {
-            Player player = Server.getInstance().getPlayer(winner).orElse(null);
-            if (player != null) {
-                manager.giveAiReward(player, aiLevel);
-            }
-        }
         if (playerWon && aiLevel == 3) {
             announceToAll(msg);
             return;
@@ -1452,15 +1491,32 @@ public class TabletopGameBoard {
         return String.format(java.util.Locale.ROOT, "%.2f", value);
     }
 
-    private void pushRow(int row) {
-        if (entity == null || entity.isClosed()) {
+    /**
+     * 把棋盘状态按行编码下发给黑白两个棋子实体。
+     * <p>
+     * 每行 15 格、每格 0/1/2（0 空、1 黑、2 白）三进制打包：{@code Σ cell[c]*3^c}。
+     * 黑白实体各自解码同一份行编码，黑实体据此显示黑子、白实体据此显示白子。
+     */
+    private void pushRows() {
+        if (isEntityMissing()) {
             return;
         }
-        int value = 0;
-        for (int c = 0; c < SIZE; c++) {
-            value += grid[row][c] * POW3[c];
+        int[] rows = exportRows();
+        for (int r = 0; r < SIZE; r++) {
+            blackEntity.setRow(r, rows[r]);
+            whiteEntity.setRow(r, rows[r]);
         }
-        entity.setRow(row, value);
+    }
+
+    /** 批量提交包住黑白两个实体：整批只发两个元数据包（每实体一个）。 */
+    private void beginBatch() {
+        blackEntity.beginBatch();
+        whiteEntity.beginBatch();
+    }
+
+    private void endBatch() {
+        blackEntity.endBatch();
+        whiteEntity.endBatch();
     }
 
     private void setHover(int index) {
@@ -1468,15 +1524,15 @@ public class TabletopGameBoard {
             return;
         }
         hoverIndex = index;
-        if (entity != null && !entity.isClosed()) {
-            entity.setHover(index);
+        if (blackEntity != null && !blackEntity.isClosed()) {
+            blackEntity.setHover(index);
         }
     }
 
     private void setLast(int index) {
         lastIndex = index;
-        if (entity != null && !entity.isClosed()) {
-            entity.setLast(index);
+        if (blackEntity != null && !blackEntity.isClosed()) {
+            blackEntity.setLast(index);
         }
     }
 
@@ -1511,29 +1567,50 @@ public class TabletopGameBoard {
     }
 
     public void spawnEntity() {
-        if (entity != null && !entity.isClosed()) {
+        if (!isEntityMissing()) {
             return;
         }
-        Entity created = Entity.createEntity(TabletopGameStoneEntity.IDENTIFIER,
-                Position.fromObject(getCenter(), level));
-        if (created instanceof TabletopGameStoneEntity stone) {
-            this.entity = stone;
-            stone.setBoard(this);
-            // 棋子实体整体随棋盘朝向旋转，使棋子落点与方块贴图网格对齐
-            stone.setRotation(rotation * 90.0, 0.0);
-            // 边长先设好，让生成包就带正确尺寸；此时还没有观察者，不会额外发包
-            stone.setBoardSize(boardSize);
-            stone.spawnToAll();
-            // 15 行属性合并成一次同步，开局只多发一个包
-            stone.beginBatch();
-            for (int r = 0; r < SIZE; r++) {
-                pushRow(r);
-            }
-            // 重建时恢复「最后一手」与高亮标记，避免区块重载后标记丢失
-            stone.setLast(lastIndex);
-            stone.setHover(hoverIndex);
-            stone.endBatch();
+        // 若有一方残留（被单独关闭），先清掉再成对重建，避免遗留孤立的半个棋盘
+        if (blackEntity != null && !blackEntity.isClosed()) {
+            blackEntity.close();
         }
+        if (whiteEntity != null && !whiteEntity.isClosed()) {
+            whiteEntity.close();
+        }
+        blackEntity = null;
+        whiteEntity = null;
+        Entity createdBlack = Entity.createEntity(TabletopGameStoneBlackEntity.IDENTIFIER,
+                Position.fromObject(getCenter(), level));
+        if (!(createdBlack instanceof TabletopGameStoneBlackEntity black)) {
+            return;
+        }
+        Entity createdWhite = Entity.createEntity(TabletopGameStoneWhiteEntity.IDENTIFIER,
+                Position.fromObject(getCenter(), level));
+        if (!(createdWhite instanceof TabletopGameStoneWhiteEntity white)) {
+            black.close();
+            return;
+        }
+        this.blackEntity = black;
+        this.whiteEntity = white;
+        black.setBoard(this);
+        white.setBoard(this);
+        // 棋子实体整体随棋盘朝向旋转，使棋子落点与方块贴图网格对齐
+        black.setRotation(rotation * 90.0, 0.0);
+        white.setRotation(rotation * 90.0, 0.0);
+        // 边长先设好，让生成包就带正确尺寸；此时还没有观察者，不会额外发包
+        black.setBoardSize(boardSize);
+        white.setBoardSize(boardSize);
+        black.spawnToAll();
+        white.spawnToAll();
+        // 15 个行属性合并成一次同步，开局每实体只多发一个包
+        black.beginBatch();
+        white.beginBatch();
+        pushRows();
+        // 重建时恢复「最后一手」与高亮标记，避免区块重载后标记丢失（标记只由黑实体绘制）
+        black.setLast(lastIndex);
+        black.setHover(hoverIndex);
+        black.endBatch();
+        white.endBatch();
     }
 
     public void remove() {
@@ -1547,10 +1624,14 @@ public class TabletopGameBoard {
         menuHolder = null;
         knownNames.clear();
         refundStakes();
-        if (entity != null && !entity.isClosed()) {
-            entity.close();
+        if (blackEntity != null && !blackEntity.isClosed()) {
+            blackEntity.close();
         }
-        entity = null;
+        if (whiteEntity != null && !whiteEntity.isClosed()) {
+            whiteEntity.close();
+        }
+        blackEntity = null;
+        whiteEntity = null;
         for (int i = 0; i < boardSize; i++) {
             for (int j = 0; j < boardSize; j++) {
                 Vector3 p = new Vector3(
@@ -1657,7 +1738,23 @@ public class TabletopGameBoard {
                 && Math.abs(player.y - c.y) <= 12.0;
     }
 
-    public String statusText() {
+    /** 向棋盘半径内的所有玩家播放自定义音效（范围与玩家识别半径一致）。 */
+    private void playBoardSound(String sound) {
+        List<Player> listeners = new ArrayList<>();
+        for (Player p : level.getPlayers().values()) {
+            if (inRange(p)) {
+                listeners.add(p);
+            }
+        }
+        if (!listeners.isEmpty()) {
+            level.addSound(center, sound, listeners.toArray(new Player[0]));
+        }
+    }
+
+    /**
+     * 表单正文。尾部提示按座位状态给出，因此需要传入查看者，具体规则见 {@link #appendStatusHint}。
+     */
+    public String statusText(Player viewer) {
         StringBuilder sb = new StringBuilder();
         sb.append("§7座位：§f");
         if (seats.isEmpty()) {
@@ -1665,8 +1762,8 @@ public class TabletopGameBoard {
         } else {
             for (UUID id : seats) {
                 int color = seatColor(id);
-                sb.append(color == BLACK ? "§0[黑] " : color == WHITE ? "§f[白] " : "§7[待选] ")
-                        .append("§7").append(nameOf(id)).append("  ");
+                sb.append(color == BLACK ? "§e（黑）§f" : color == WHITE ? "§e（白）§f" : "§e（待选）§f")
+                        .append(nameOf(id)).append("  ");
             }
         }
         sb.append("\n§7状态：§f");
@@ -1686,11 +1783,32 @@ public class TabletopGameBoard {
             }
         }
         sb.append("\n§7规则：§f").append(ruleName(rule));
-        if (effectiveRule() == RULE_SWAP2) {
-            sb.append("§7（Swap2，长连不算胜）");
-        }
-        sb.append("\n\n§7提示：可加入他人对局，或直接选择「单人对战」挑战机器人。");
+        appendStatusHint(sb, viewer);
         return sb.toString();
+    }
+
+    /**
+     * 尾部提示行：
+     * <ul>
+     *     <li>0 人入座：玩法引导（加入他人对局 / 单人对战）</li>
+     *     <li>1 人入座 / 两人（玩家）入座：提示可重新打开界面刷新当前状态</li>
+     *     <li>两人入座中后加入的一方：额外提示等待对方开始棋局</li>
+     *     <li>1 玩家 + 1 机器人的准备开始表单：不追加提示</li>
+     * </ul>
+     */
+    private void appendStatusHint(StringBuilder sb, Player viewer) {
+        if (seats.isEmpty()) {
+            sb.append("\n\n§7提示：可加入他人对局，或直接选择「单人对战」挑战机器人。");
+            return;
+        }
+        // 1 玩家 + 1 机器人的准备开始表单不需要刷新提示
+        if (isAiGame()) {
+            return;
+        }
+        if (seats.size() >= 2 && viewer != null && !isFirstJoiner(viewer.getUniqueId())) {
+            sb.append("\n\n§e等待对方开始棋局");
+        }
+        sb.append("\n\n§e提示：可重新打开界面刷新当前状态");
     }
 
     /** 对局过程中的提示以「提示条（tip）」形式发给执棋的两位玩家。 */

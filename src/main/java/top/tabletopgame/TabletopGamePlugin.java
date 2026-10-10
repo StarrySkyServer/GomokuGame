@@ -6,12 +6,21 @@ import cn.nukkit.command.CommandSender;
 import cn.nukkit.entity.custom.EntityManager;
 import cn.nukkit.item.Item;
 import cn.nukkit.plugin.PluginBase;
-import top.tabletopgame.board.TabletopGameBoard4x4Block;
+import top.tabletopgame.board.OthelloBoardBlock;
+import top.tabletopgame.board.TabletopGameBoard3x3Block;
 import top.tabletopgame.board.TabletopGameBoardBlock;
-import top.tabletopgame.entity.TabletopGameStoneEntity;
+import top.tabletopgame.board.XiangqiBoardBlock;
+import top.tabletopgame.entity.OthelloDiscEntity;
+import top.tabletopgame.entity.TabletopGameStoneBlackEntity;
+import top.tabletopgame.entity.TabletopGameStoneWhiteEntity;
+import top.tabletopgame.entity.XiangqiPieceEntity;
+import top.tabletopgame.game.OthelloManager;
 import top.tabletopgame.game.TabletopGameManager;
-import top.tabletopgame.item.TabletopGameBoard4x4Item;
+import top.tabletopgame.game.XiangqiManager;
+import top.tabletopgame.item.OthelloBoardItem;
+import top.tabletopgame.item.TabletopGameBoard3x3Item;
 import top.tabletopgame.item.TabletopGameBoardItem;
+import top.tabletopgame.item.XiangqiBoardItem;
 
 /**
  * 五子棋插件入口。
@@ -22,18 +31,37 @@ import top.tabletopgame.item.TabletopGameBoardItem;
 public class TabletopGamePlugin extends PluginBase {
 
     private TabletopGameManager manager;
+    private XiangqiManager xiangqiManager;
+    private OthelloManager othelloManager;
 
     @Override
     public void onLoad() {
-        TabletopGameStoneEntity.registerProperties();
-        EntityManager.get().registerDefinition(TabletopGameStoneEntity.DEF);
+        TabletopGameStoneBlackEntity.registerProperties();
+        EntityManager.get().registerDefinition(TabletopGameStoneBlackEntity.DEF);
+        TabletopGameStoneWhiteEntity.registerProperties();
+        EntityManager.get().registerDefinition(TabletopGameStoneWhiteEntity.DEF);
+        XiangqiPieceEntity.registerProperties();
+        EntityManager.get().registerDefinition(XiangqiPieceEntity.DEF);
+        OthelloDiscEntity.registerProperties();
+        EntityManager.get().registerDefinition(OthelloDiscEntity.DEF);
         TabletopGameBoardBlock.register();
-        TabletopGameBoard4x4Block.register();
+        TabletopGameBoard3x3Block.register();
+        XiangqiBoardBlock.register();
+        OthelloBoardBlock.register();
         Item.registerCustomItem(TabletopGameBoardItem.class);
-        Item.registerCustomItem(TabletopGameBoard4x4Item.class);
-        getLogger().info("已注册自定义实体 " + TabletopGameStoneEntity.IDENTIFIER
-                + "、方块 " + TabletopGameBoardBlock.IDENTIFIER + " / " + TabletopGameBoard4x4Block.IDENTIFIER
-                + "、物品 " + TabletopGameBoardItem.IDENTIFIER + " / " + TabletopGameBoard4x4Item.IDENTIFIER);
+        Item.registerCustomItem(TabletopGameBoard3x3Item.class);
+        Item.registerCustomItem(XiangqiBoardItem.class);
+        Item.registerCustomItem(OthelloBoardItem.class);
+        getLogger().info("已注册自定义实体 " + TabletopGameStoneBlackEntity.IDENTIFIER
+                + " / " + TabletopGameStoneWhiteEntity.IDENTIFIER
+                + " / " + XiangqiPieceEntity.IDENTIFIER
+                + " / " + OthelloDiscEntity.IDENTIFIER
+                + "、方块 " + TabletopGameBoardBlock.IDENTIFIER + " / " + TabletopGameBoard3x3Block.IDENTIFIER
+                + " / " + XiangqiBoardBlock.IDENTIFIER
+                + " / " + OthelloBoardBlock.IDENTIFIER
+                + "、物品 " + TabletopGameBoardItem.IDENTIFIER + " / " + TabletopGameBoard3x3Item.IDENTIFIER
+                + " / " + XiangqiBoardItem.IDENTIFIER
+                + " / " + OthelloBoardItem.IDENTIFIER);
     }
 
     @Override
@@ -45,6 +73,18 @@ public class TabletopGamePlugin extends PluginBase {
         getServer().getScheduler().scheduleRepeatingTask(this, this.manager::tick, 5);
         // 插件在 STARTUP 阶段启用，此时关卡还没加载，等关卡就绪后由 tick 恢复已保存的棋盘
         this.manager.requestLoad();
+
+        // 中国象棋：复用五子棋的配置（玩家识别半径），存档走独立文件
+        this.xiangqiManager = new XiangqiManager(this, this.manager);
+        getServer().getPluginManager().registerEvents(this.xiangqiManager, this);
+        getServer().getScheduler().scheduleRepeatingTask(this, this.xiangqiManager::tick, 5);
+        this.xiangqiManager.requestLoad();
+
+        // 黑白棋（奥赛罗）：复用五子棋的配置，存档走独立文件
+        this.othelloManager = new OthelloManager(this, this.manager);
+        getServer().getPluginManager().registerEvents(this.othelloManager, this);
+        getServer().getScheduler().scheduleRepeatingTask(this, this.othelloManager::tick, 5);
+        this.othelloManager.requestLoad();
         getLogger().info("TabletopGamePlugin 已启用");
     }
 
@@ -53,6 +93,12 @@ public class TabletopGamePlugin extends PluginBase {
         if (this.manager != null) {
             // 关服兜底：同步等待写盘完成
             this.manager.saveNow();
+        }
+        if (this.xiangqiManager != null) {
+            this.xiangqiManager.saveNow();
+        }
+        if (this.othelloManager != null) {
+            this.othelloManager.saveNow();
         }
         getLogger().info("TabletopGamePlugin 已关闭");
     }
@@ -79,11 +125,26 @@ public class TabletopGamePlugin extends PluginBase {
             player.sendMessage("§c你没有权限使用该命令。");
             return true;
         }
-        boolean large = args.length > 0 && "4x4".equalsIgnoreCase(args[0]);
-        player.getInventory().addItem(large ? new TabletopGameBoard4x4Item() : new TabletopGameBoardItem());
-        player.sendMessage(large
-                ? "§a已获得 4×4 五子棋棋盘物品，对准地面右键即可放置。"
-                : "§a已获得五子棋棋盘物品，对准地面右键即可放置。");
+        boolean medium = args.length > 0 && "3x3".equalsIgnoreCase(args[0]);
+        boolean xiangqi = args.length > 0 && "xiangqi".equalsIgnoreCase(args[0]);
+        boolean othello = args.length > 0 && "othello".equalsIgnoreCase(args[0]);
+        Item board;
+        String sizeLabel;
+        if (xiangqi) {
+            board = new XiangqiBoardItem();
+            sizeLabel = "中国象棋";
+        } else if (othello) {
+            board = new OthelloBoardItem();
+            sizeLabel = "黑白棋";
+        } else if (medium) {
+            board = new TabletopGameBoard3x3Item();
+            sizeLabel = "3×3";
+        } else {
+            board = new TabletopGameBoardItem();
+            sizeLabel = "";
+        }
+        player.getInventory().addItem(board);
+        player.sendMessage("§a已获得" + sizeLabel + "棋盘物品，对准地面右键即可放置。");
         return true;
     }
 }
